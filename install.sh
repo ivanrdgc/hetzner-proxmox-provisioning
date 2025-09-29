@@ -24,7 +24,8 @@ echo ">>> Installing Proxmox host: $NAME"
   -r yes -l 1 \
   -i "$IMAGE" \
   -g -p "$PARTSPEC" -a \
-  -x /root/chroot_config.sh
+  -x /root/chroot_config.sh \
+  </dev/null
 
 echo ">>> installimage finished, rebooting..."
 reboot
