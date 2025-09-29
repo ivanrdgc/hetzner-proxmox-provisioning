@@ -16,7 +16,7 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd
 
 # Set root password
 # openssl passwd -6 'your_password'
-echo 'root:$6$qvrOd6E0D0NEk9q.$oByVma/Yv09x9UfjicCg5ulGUC4qAa5hs0.xt2tRjKemJqcxblkt/VyLx.1Q52O3JQscSzyOc2QPn1hLllSe4/' | chpasswd -e
+echo 'root:$6$snErXYs0ZtgB1odl$1SfK3X4p59VX9wQ1S8xi.nt1qfjzrdRtfG0nk/trcz1gV.vAqvvfgT6l1U4VbvTKQWOpBBunF3OFfMuP.ulfd1' | chpasswd -e
 
 # Add Proxmox repositories and keys
 cat > /etc/apt/sources.list.d/pve-install-repo.sources << EOF
