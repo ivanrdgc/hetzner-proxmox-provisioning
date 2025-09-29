@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Upgrade system and install base packages
-apt update && apt upgrade -y
+apt-get update && apt-get upgrade -y
 tasksel install standard ssh-server
 
 # Protect SSH
@@ -29,11 +29,11 @@ EOF
 wget https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg -O /usr/share/keyrings/proxmox-archive-keyring.gpg
 
 # Upgrade system and install Kernel
-apt update && apt upgrade -y
-apt install proxmox-default-kernel -y --purge
+apt-get update && apt-get upgrade -y
+apt-get install proxmox-default-kernel -y --purge
 
 # Purge Debian kernel and os-prober
-apt purge -y linux-image-amd64 'linux-image-6.12*' os-prober
+apt-get purge -y linux-image-amd64 'linux-image-6.12*' os-prober
 update-grub
 
 # Fetch first_boot.sh into a root-owned, executable path

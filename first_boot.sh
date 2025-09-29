@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Install Proxmox
-echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony
+echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony --purge
 # Comment pve-enterprise source
 sed -i 's/^/#/' /etc/apt/sources.list.d/pve-enterprise.sources
-apt update && apt upgrade -y
+apt-get update && apt-get upgrade -y
 
 # Configure vmbr0
 WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')
