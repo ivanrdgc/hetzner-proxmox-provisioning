@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 2 || "$1" != "-n" ]]; then
-  echo "Usage: $0 -n <server-name>" >&2
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <server-name>" >&2
   exit 1
 fi
 
-NAME="$2"
+NAME="$1"
 
 # Hard-coded defaults
 IMAGE="/root/images/Debian-1300-trixie-amd64-base.tar.gz"
@@ -19,7 +19,7 @@ chmod 0700 /root/chroot_config.sh
 
 echo ">>> Installing Proxmox host: $NAME"
 # Call installimage
-installimage \
+/root/.oldroot/nfs/install/installimage \
   -n "$NAME" \
   -r yes -l 1 \
   -i "$IMAGE" \
