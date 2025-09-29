@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 # Install Proxmox
 echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony
 # Comment pve-enterprise source

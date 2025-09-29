@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 # Upgrade system and install base packages
 apt update && apt upgrade -y
 tasksel install standard ssh-server
@@ -32,3 +35,33 @@ apt install proxmox-default-kernel -y --purge
 # Purge Debian kernel and os-prober
 apt purge -y linux-image-amd64 'linux-image-6.12*' os-prober
 update-grub
+
+# Fetch first_boot.sh into a root-owned, executable path
+curl -fsSL -o /usr/local/sbin/first_boot.sh \
+  https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/first_boot.sh
+chmod 0700 /usr/local/sbin/first_boot.sh
+
+# Create a self-destructing systemd unit
+cat > /etc/systemd/system/firstboot.service <<'EOF'
+[Unit]
+Description=Run custom first_boot.sh once on first boot and then remove itself
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/bin/bash -euxo pipefail -c '\
+  /usr/local/sbin/first_boot.sh && \
+  systemctl disable firstboot.service && \
+  rm -f /etc/systemd/system/firstboot.service /usr/local/sbin/first_boot.sh && \
+  systemctl daemon-reload \
+'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable the unit so it runs on first boot
+systemctl enable firstboot.service
