@@ -14,16 +14,19 @@ if ! grep -qE '^\s*iface\s+vmbr0\b' /etc/network/interfaces; then
 
 auto vmbr0
 iface vmbr0 inet static
-    address 10.10.0.1/16
+    address 10.10.10.1/24
     bridge-ports none
     bridge-stp off
     bridge-fd 0
     
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s '10.10.0.0/16' -o ${WAN_IF} -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s '10.10.0.0/16' -o ${WAN_IF} -j MASQUERADE
+    post-up   iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o ${WAN_IF} -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s '10.10.10.0/24' -o ${WAN_IF} -j MASQUERADE
 EOF
 fi
 
 ifreload -a
 rm /etc/network/interfaces.new
+
+apt-get install -y dnsmasq
+systemctl disable --now dnsmasq
