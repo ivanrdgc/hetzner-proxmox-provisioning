@@ -26,3 +26,4 @@ EOF
 fi
 
 ifreload -a
+rm /etc/network/interfaces.new
