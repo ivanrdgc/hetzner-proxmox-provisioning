@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# IP address will be substituted by install.sh wrapper
+PRIVATE_NETWORK_IP="192.168.100.1"
+
 # Upgrade system and install base packages
 apt-get update && apt-get upgrade -y
 tasksel install standard ssh-server
@@ -36,9 +39,9 @@ apt-get install proxmox-default-kernel -y --purge
 apt-get purge -y linux-image-amd64 'linux-image-6.12*' os-prober
 update-grub
 
-# Fetch first_boot.sh into a root-owned, executable path
-curl -fsSL -o /usr/local/sbin/first_boot.sh \
-  https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/first_boot.sh
+# Fetch first_boot.sh and substitute the IP address directly
+curl -fsSL https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/first_boot.sh | \
+  sed "s/PRIVATE_NETWORK_IP=\"192.168.100.1\"/PRIVATE_NETWORK_IP=\"$PRIVATE_NETWORK_IP\"/" > /usr/local/sbin/first_boot.sh
 chmod 0700 /usr/local/sbin/first_boot.sh
 
 # Create a self-destructing systemd unit

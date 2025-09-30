@@ -1,29 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# IP address is substituted directly by chroot_config.sh
+PRIVATE_NETWORK_IP="192.168.100.1"
+
 # Install Proxmox
 echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony --purge
 # Comment pve-enterprise source
 sed -i 's/^/#/' /etc/apt/sources.list.d/pve-enterprise.sources
 apt-get update && apt-get upgrade -y
 
-# Configure vmbr0
+# Configure private network on VLAN 4000
 WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')
-if ! grep -qE '^\s*iface\s+vmbr0\b' /etc/network/interfaces; then
-	cat >> /etc/network/interfaces <<EOF
-
-auto vmbr0
-iface vmbr0 inet static
-    address 10.10.10.1/24
-    bridge-ports none
-    bridge-stp off
-    bridge-fd 0
-    
-    post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o ${WAN_IF} -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s '10.10.10.0/24' -o ${WAN_IF} -j MASQUERADE
+cat >> /etc/network/interfaces <<EOF
+auto ${WAN_IF}.4000
+iface ${WAN_IF}.4000 inet static
+  address ${PRIVATE_NETWORK_IP}
+  netmask 255.255.255.0
+  vlan-raw-device ${WAN_IF}
+  mtu 1400
 EOF
-fi
 
 ifreload -a
 rm /etc/network/interfaces.new
