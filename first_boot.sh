@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# IP address is substituted directly by chroot_config.sh
-PRIVATE_NETWORK_IP="192.168.100.1"
+# IP addresses are substituted directly by chroot_config.sh
+PRIVATE_IPV4="10.64.0.1"
+PRIVATE_IPV6="fd00:4000::1"
 
 # Install Proxmox
 echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections; DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony --purge
@@ -13,12 +14,17 @@ apt-get update && apt-get upgrade -y
 # Configure private network on VLAN 4000
 WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')
 cat >> /etc/network/interfaces <<EOF
+
 auto ${WAN_IF}.4000
 iface ${WAN_IF}.4000 inet static
-  address ${PRIVATE_NETWORK_IP}
-  netmask 255.255.255.0
+  address ${PRIVATE_IPV4}
+  netmask 255.240.0.0
   vlan-raw-device ${WAN_IF}
   mtu 1400
+
+iface ${WAN_IF}.4000 inet6 static
+  address ${PRIVATE_IPV6}
+  netmask 64
 EOF
 
 ifreload -a
