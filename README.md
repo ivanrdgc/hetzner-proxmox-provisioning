@@ -3,11 +3,11 @@ Execute this on a new server to prepare it for Proxmox:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/install.sh \
-  | bash -s -- 2
+  | bash -s -- 2 AX162-R-384
 ```
 
 This will automatically generate:
-- Hostname: `proxmox-0000002`
+- Hostname: `AX162-R-384-0000002`
 - Private IPv4: `10.64.0.2`
 - Private IPv6: `fd00:4000::2`
 

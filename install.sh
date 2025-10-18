@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <server-id>" >&2
-  echo "Example: $0 2" >&2
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <server-id> <server_type>" >&2
+  echo "Example: $0 2 AX162-R-384" >&2
   echo "" >&2
   echo "This will generate:" >&2
-  echo "  - Hostname: proxmox-0000002" >&2
+  echo "  - Hostname: AX162-R-384-0000002" >&2
   echo "  - Private IPv4: 10.64.0.2" >&2
   echo "  - Private IPv6: fd00:4000::2" >&2
   exit 1
 fi
 
 SERVER_ID="$1"
+SERVER_TYPE="$2"
 
 # Validate server ID is a number
 if ! [[ $SERVER_ID =~ ^[0-9]+$ ]]; then
@@ -28,8 +29,8 @@ if [[ $SERVER_ID -lt 1 || $SERVER_ID -gt 1048574 ]]; then
   exit 1
 fi
 
-# Generate values from server ID
-NAME=$(printf "proxmox-%07d" "$SERVER_ID")
+# Generate values from server ID and server type
+NAME="${SERVER_TYPE}-$(printf "%07d" "$SERVER_ID")"
 
 # Calculate IP octets for 10.64.0.0/12 network
 # The /12 network spans 10.64.0.0 to 10.79.255.255
@@ -42,6 +43,7 @@ PRIVATE_IPV4="10.${second_octet}.${third_octet}.${fourth_octet}"
 PRIVATE_IPV6=$(printf "fd00:4000::%x" "$SERVER_ID")
 
 echo "Server ID: $SERVER_ID"
+echo "Server Type: $SERVER_TYPE"
 echo "Hostname: $NAME"
 echo "Private IPv4: $PRIVATE_IPV4"
 echo "Private IPv6: $PRIVATE_IPV6"
