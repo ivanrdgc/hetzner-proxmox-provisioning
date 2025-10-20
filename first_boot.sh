@@ -122,17 +122,19 @@ FORWARD ACCEPT -p tcp -d +VM_PRIV4 --dport 3389
 EOF
 
 # Activate firewall now
-pve-firewall restart || true
+pve-firewall restart
 
-# Enable snippets on 'local' storage and install RDP DNAT hookscript
-# Ensure 'snippets' content is enabled on local storage
-pvesm set local --content vztmpl,iso,backup,rootdir,images,snippets || true
-mkdir -p /var/lib/vz/snippets
+# Ensure cluster-wide snippets storage exists (safe to run on any node)
+mkdir -p /etc/pve/snippets
+if ! pvesm status | awk '{print $1}' | grep -qx snippets-shared; then
+  pvesm add dir snippets-shared \
+    --path /etc/pve/snippets \
+    --content snippets || true
+fi
 
-cat >/var/lib/vz/snippets/rdp-dnat.sh <<'EOF'
+# Install the RDP DNAT hookscript on the cluster filesystem
+cat >/etc/pve/snippets/rdp-dnat.sh <<'EOF'
 #!/usr/bin/env bash
-# Hookscript: auto-DNAT host:(20000+VMID) -> VM:3389 and remove on stop.
-# Requires: qemu-guest-agent in VM; jq on host; nftables enabled.
 set -euo pipefail
 VMID="$1"; PHASE="$2"
 PORT=$((20000 + VMID))
@@ -144,12 +146,11 @@ ensure_chain() {
 }
 
 vm_ipv4() {
-  # Try up to 20x to fetch a 10.0.0.0/16 address from guest agent
   for _ in $(seq 1 20); do
     if out=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null); then
       ip=$(echo "$out" | jq -r '.[]?."ip-addresses"[]? | select(."ip-address-type"=="ipv4") | .address' \
            | grep -E '^10\.0\.[0-9]+\.[0-9]+$' | head -n1 || true)
-      if [[ -n "$ip" ]]; then echo "$ip"; return 0; fi
+      [[ -n "$ip" ]] && { echo "$ip"; return 0; }
     fi
     sleep 2
   done
@@ -158,7 +159,6 @@ vm_ipv4() {
 
 add_rule() {
   local ip="$1"; ensure_chain
-  # Remove existing rules for this VMID/port (by comment)
   while read -r h; do nft delete rule ip dnat prerouting handle "$h" || true; done < <(
     nft -a list chain ip dnat prerouting | awk '/comment "vmid-'"$VMID"'"$/ {print $NF}'
   )
@@ -172,16 +172,10 @@ del_rule() {
 }
 
 case "$PHASE" in
-  post-start)
-    ip=$(vm_ipv4) || { echo "WARN: no VM IP for $VMID"; exit 0; }
-    add_rule "$ip"
-    ;;
-  pre-stop|post-stop)
-    del_rule
-    ;;
+  post-start) ip=$(vm_ipv4) || { echo "WARN: no VM IP for $VMID"; exit 0; }; add_rule "$ip" ;;
+  pre-stop|post-stop) del_rule ;;
 esac
 EOF
-chmod +x /var/lib/vz/snippets/rdp-dnat.sh
 
 # All done.
 # Next steps:
