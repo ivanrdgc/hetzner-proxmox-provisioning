@@ -41,7 +41,7 @@ apt-get purge -y linux-image-amd64 'linux-image-6.12*' os-prober
 update-grub
 
 # Fetch first_boot.sh and substitute the IP addresses directly
-curl -fsSL https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/first_boot.sh | \
+curl -fsSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/first_boot.sh | \
   sed "s|PRIVATE_IPV4=\"10.64.0.1\"|PRIVATE_IPV4=\"$PRIVATE_IPV4\"|" | \
   sed "s|PRIVATE_IPV6=\"fd00:4000::1\"|PRIVATE_IPV6=\"$PRIVATE_IPV6\"|" > /usr/local/sbin/first_boot.sh
 chmod 0700 /usr/local/sbin/first_boot.sh

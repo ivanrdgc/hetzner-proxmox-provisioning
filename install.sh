@@ -56,7 +56,7 @@ PARTSPEC="/boot/efi:esp:256M,/:ext4:all"
 cat > /root/chroot_wrapper.sh << EOF
 #!/bin/bash
 # Download chroot_config.sh and substitute the IP addresses directly
-curl -fsSL https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/chroot_config.sh | \\
+curl -fsSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/chroot_config.sh | \\
   sed "s|PRIVATE_IPV4=\"10.64.0.1\"|PRIVATE_IPV4=\"$PRIVATE_IPV4\"|" | \\
   sed "s|PRIVATE_IPV6=\"fd00:4000::1\"|PRIVATE_IPV6=\"$PRIVATE_IPV6\"|" | \\
   bash
