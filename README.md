@@ -2,7 +2,7 @@ Execute this on a new server to prepare it for Proxmox:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/ivanrdgc/hetzner-proxmox-provisioning/refs/heads/master/install.sh \
+  https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/install.sh \
   | bash -s -- 2 AX162-R-384
 ```
 
