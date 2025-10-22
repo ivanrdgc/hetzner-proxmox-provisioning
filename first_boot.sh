@@ -145,12 +145,21 @@ EOF
 fi
 
 # ---- dnsmasq (IPv4 DHCP + IPv6 RA/DHCPv6) ----
+echo "==> Waiting for vmbr0 to be UP"
+for _ in $(seq 1 30); do
+  if ip -br link show vmbr0 2>/dev/null | grep -q ' UP'; then
+    break
+  fi
+  sleep 1
+done
+ip -br link show vmbr0 || { echo "ERROR: vmbr0 not present"; exit 1; }
+
 echo "==> Configuring dnsmasq on vmbr0 (IPv4 DHCP + IPv6 RA)"
-if [[ -n "${V6_PREFIX_FOR_DNS}" ]]; then
+if [[ -n "${V6_PREFIX_FOR_DNS:-}" ]]; then
   cat >/etc/dnsmasq.d/vmbr0.conf <<EOF
 interface=vmbr0
 bind-interfaces
-authoritative
+dhcp-authoritative
 dhcp-rapid-commit
 
 # IPv4 DHCP
@@ -167,14 +176,17 @@ else
   cat >/etc/dnsmasq.d/vmbr0.conf <<'EOF'
 interface=vmbr0
 bind-interfaces
-authoritative
+dhcp-authoritative
 dhcp-rapid-commit
 dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,1.1.1.1,8.8.8.8
 EOF
 fi
-systemctl enable --now dnsmasq
+
+# Test config exactly like systemd does, then start
+/usr/share/dnsmasq/systemd-helper checkconfig
+systemctl enable dnsmasq || true
 systemctl restart dnsmasq
 
 # ---- L2 isolation on vmbr0 (bridge nft) ----
