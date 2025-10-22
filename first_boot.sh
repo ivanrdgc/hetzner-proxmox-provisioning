@@ -379,7 +379,6 @@ case "$PHASE" in
     ;;
 esac
 EOF
-chmod +x /etc/pve/snippets/rdp-dnat.sh
 
 echo "==> Completed first_boot.sh successfully."
 
