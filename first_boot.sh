@@ -64,8 +64,8 @@ iface vmbr0 inet static
     bridge-fd 0
 
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o eno1 -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s '10.10.10.0/24' -o eno1 -j MASQUERADE
+    post-up   iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
 EOF
 )
 add_or_update_block "auto vmbr0" "$VMBR0_BLOCK"
