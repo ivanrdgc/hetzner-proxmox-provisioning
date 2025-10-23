@@ -71,40 +71,37 @@ EOF
 add_or_update_block "auto vmbr0" "$VMBR0_BLOCK"
 
 # vmbr0 IPv6 router address from WAN /64 (NDP proxy mode)
-# V6_PREFIX_FOR_DNS=""
-# if [[ -n "$V6CIDR" ]]; then
-#   V6_PREFIX_FOR_DNS="$(python3 - <<'PY' "$V6CIDR"
-# import ipaddress, sys
-# iface=ipaddress.IPv6Interface(sys.argv[1])
-# net=iface.network
-# print(":".join(net.network_address.exploded.split(":")[0:4]))
-# PY
-#   )"
-#   VMBR0_V6_ROUTER="${V6_PREFIX_FOR_DNS}::1/64"
+if [[ -n "$V6CIDR" ]]; then
+  V6_PREFIX_FOR_DNS="$(python3 - <<'PY' "$V6CIDR"
+import ipaddress, sys
+iface=ipaddress.IPv6Interface(sys.argv[1])
+net=iface.network
+print(":".join(net.network_address.exploded.split(":")[0:4]))
+PY
+  )"
+  VMBR0_V6_ROUTER="${V6_PREFIX_FOR_DNS}::1/64"
 
-#   if grep -qE '^iface vmbr0 inet6 ' /etc/network/interfaces; then
-#     awk -v newaddr="$VMBR0_V6_ROUTER" '
-#       BEGIN{inblk=0}
-#       /^iface vmbr0 inet6 /{print; inblk=1; next}
-#       inblk && /^[[:space:]]*address[[:space:]]/ {print "    address " newaddr; inblk=0; next}
-#       {print}
-#     ' /etc/network/interfaces > /etc/network/interfaces.tmp && mv /etc/network/interfaces.tmp /etc/network/interfaces
-#   else
-#     cat >> /etc/network/interfaces <<EOF
+  if grep -qE '^iface vmbr0 inet6 ' /etc/network/interfaces; then
+    awk -v newaddr="$VMBR0_V6_ROUTER" '
+      BEGIN{inblk=0}
+      /^iface vmbr0 inet6 /{print; inblk=1; next}
+      inblk && /^[[:space:]]*address[[:space:]]/ {print "    address " newaddr; inblk=0; next}
+      {print}
+    ' /etc/network/interfaces > /etc/network/interfaces.tmp && mv /etc/network/interfaces.tmp /etc/network/interfaces
+  else
+    cat >> /etc/network/interfaces <<EOF
 
-# # IPv6 (WAN /64) for VMs (router address on vmbr0)
-# iface vmbr0 inet6 static
-#     address ${VMBR0_V6_ROUTER}
-# EOF
-#   fi
-# else
-#   echo "WARN: No global IPv6 detected on ${WAN_IF}; skipping vmbr0 IPv6."
-# fi
+# IPv6 (WAN /64) for VMs (router address on vmbr0)
+iface vmbr0 inet6 static
+    address ${VMBR0_V6_ROUTER}
+EOF
+  fi
+else
+  echo "WARN: No global IPv6 detected on ${WAN_IF}; skipping vmbr0 IPv6."
+fi
 
 # Apply network changes idempotently
-if command -v ifreload >/dev/null 2>&1; then
-  ifreload -a || true
-fi
+ifreload -a
 rm -f /etc/network/interfaces.new || true
 
 # ---- Kernel forwarding + rp_filter sane defaults ----
@@ -154,39 +151,46 @@ apt-get install -y dnsmasq
 # done
 # ip -br link show vmbr0 || { echo "ERROR: vmbr0 not present"; exit 1; }
 
-# echo "==> Configuring dnsmasq on vmbr0 (IPv4 DHCP + IPv6 RA)"
-# if [[ -n "${V6_PREFIX_FOR_DNS:-}" ]]; then
-#   cat >/etc/dnsmasq.d/vmbr0.conf <<EOF
-# interface=vmbr0
-# bind-interfaces
-# dhcp-authoritative
-# dhcp-rapid-commit
+echo "==> Configuring dnsmasq on vmbr0 (IPv4 DHCP + IPv6 RA)"
 
-# # IPv4 DHCP
-# dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
-# dhcp-option=3,10.0.0.1
-# dhcp-option=6,1.1.1.1,8.8.8.8
+# Function to add configuration block if it doesn't exist
+add_dnsmasq_block() {
+  local marker="$1"
+  local config_file="/etc/dnsmasq.d/vmbr0.conf"
+  
+  if [[ ! -f "$config_file" ]] || ! grep -qF "$marker" "$config_file"; then
+    cat >> "$config_file"
+  fi
+}
 
-# # IPv6 RA + DHCPv6 (from WAN /64)
-# enable-ra
-# dhcp-range=${V6_PREFIX_FOR_DNS}::100,${V6_PREFIX_FOR_DNS}::1ff,64,12h
-# dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
-# EOF
-# else
-  cat >/etc/dnsmasq.d/vmbr0.conf <<'EOF'
+# IPv4 DHCP configuration (always add if not present)
+add_dnsmasq_block "interface=vmbr0" <<'EOF'
 interface=vmbr0
 bind-interfaces
 dhcp-authoritative
 dhcp-rapid-commit
+
+# IPv4 DHCP
 dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,1.1.1.1,8.8.8.8
 EOF
-# fi
+
+# IPv6 RA + DHCPv6 configuration (only if IPv6 is available)
+if [[ -n "${V6_PREFIX_FOR_DNS:-}" ]]; then
+  add_dnsmasq_block "enable-ra" <<EOF
+# IPv6 RA + DHCPv6 (from WAN /64)
+enable-ra
+dhcp-range=${V6_PREFIX_FOR_DNS}::100,${V6_PREFIX_FOR_DNS}::1ff,64,12h
+dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
+EOF
+else
+  echo "WARN: No global IPv6 detected on ${WAN_IF}; skipping IPv6 DHCP configuration."
+fi
 
 # Test config exactly like systemd does, then start
-/usr/share/dnsmasq/systemd-helper checkconfig
-systemctl enable dnsmasq || true
+#/usr/share/dnsmasq/systemd-helper checkconfig
+#systemctl enable dnsmasq || true
 systemctl restart dnsmasq
 
 # ---- L2 isolation on vmbr0 (bridge nft) ----
