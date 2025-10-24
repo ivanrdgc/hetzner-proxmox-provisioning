@@ -31,8 +31,8 @@ V6CIDR="$(ip -6 -o addr show dev "$WAN_IF" scope global | awk '{print $4}' | hea
 echo "==> Configuring VLAN 4000 + vmbr0 (NAT IPv4 + IPv6 with NDP proxy)"
 
 # Remove existing IPv6 configuration from main interface (keep only IPv4)
-echo "==> Removing IPv6 from main interface (keeping only IPv4)"
-sed -i '/^iface '"${WAN_IF}"' inet6 /,/^$/d' /etc/network/interfaces
+#echo "==> Removing IPv6 from main interface (keeping only IPv4)"
+#sed -i '/^iface '"${WAN_IF}"' inet6 /,/^$/d' /etc/network/interfaces
 
 add_or_update_block() {
   local start_line="$1" content="$2"
