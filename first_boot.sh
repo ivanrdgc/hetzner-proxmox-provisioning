@@ -29,6 +29,11 @@ V6CIDR="$(ip -6 -o addr show dev "$WAN_IF" scope global | awk '{print $4}' | hea
 
 # ---- /etc/network/interfaces updates (idempotent) ----
 echo "==> Configuring VLAN 4000 + vmbr0 (NAT IPv4 + IPv6 with NDP proxy)"
+
+# Remove existing IPv6 configuration from main interface (keep only IPv4)
+echo "==> Removing IPv6 from main interface (keeping only IPv4)"
+sed -i '/^iface '"${WAN_IF}"' inet6 /,/^$/d' /etc/network/interfaces
+
 add_or_update_block() {
   local start_line="$1" content="$2"
   if grep -qF "$start_line" /etc/network/interfaces; then
@@ -83,9 +88,11 @@ PY
 
   if grep -qE '^iface vmbr0 inet6 ' /etc/network/interfaces; then
     awk -v newaddr="$VMBR0_V6_ROUTER" '
-      BEGIN{inblk=0}
+      BEGIN{inblk=0; added_postup=0}
       /^iface vmbr0 inet6 /{print; inblk=1; next}
       inblk && /^[[:space:]]*address[[:space:]]/ {print "    address " newaddr; inblk=0; next}
+      inblk && /^[[:space:]]*post-up.*ipv6.*forwarding/ {added_postup=1; next}
+      inblk && /^[[:space:]]*$/ && !added_postup {print "    post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding"; added_postup=1; next}
       {print}
     ' /etc/network/interfaces > /etc/network/interfaces.tmp && mv /etc/network/interfaces.tmp /etc/network/interfaces
   else
@@ -94,6 +101,7 @@ PY
 # IPv6 (WAN /64) for VMs (router address on vmbr0)
 iface vmbr0 inet6 static
     address ${VMBR0_V6_ROUTER}
+    post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
 EOF
   fi
 else
