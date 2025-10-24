@@ -11,13 +11,21 @@ DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi 
 sed -i 's/^/#/' /etc/apt/sources.list.d/pve-enterprise.sources || true
 apt-get update -y && apt-get -y upgrade
 
-# ---- Detect WAN IF and existing IPv6 ----
+# ---- Detect WAN IF and IPv6 prefix ----
 WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')
 if [[ -z "${WAN_IF:-}" ]]; then echo "ERROR: Cannot detect WAN interface"; exit 1; fi
 echo "WAN_IF=${WAN_IF}"
 
-# First global IPv6 on WAN (may be empty during very early provisioning)
-V6CIDR="$(ip -6 -o addr show dev "$WAN_IF" scope global | awk '{print $4}' | head -n1 || true)"
+# Extract IPv6 prefix from existing eno1 configuration
+V6CIDR="$(ip -6 -o addr show dev "$WAN_IF" scope global | awk '{print $4}' | head -n1)"
+V6_PREFIX_FOR_DNS="$(python3 - <<'PY' "$V6CIDR"
+import ipaddress, sys
+iface=ipaddress.IPv6Interface(sys.argv[1])
+net=iface.network
+print(":".join(net.network_address.exploded.split(":")[0:4]))
+PY
+)"
+echo "IPv6 prefix for VMs: ${V6_PREFIX_FOR_DNS}::/64"
 
 # apt-get update -y
 # apt-get install -y nftables jq python3 dnsmasq ndppd
@@ -27,24 +35,13 @@ V6CIDR="$(ip -6 -o addr show dev "$WAN_IF" scope global | awk '{print $4}' | hea
 # update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
 # systemctl enable --now nftables
 
-# ---- /etc/network/interfaces updates (idempotent) ----
+# ---- Configure network interfaces ----
 echo "==> Configuring VLAN 4000 + vmbr0 (NAT IPv4 + IPv6 with NDP proxy)"
 
-# Remove existing IPv6 configuration from main interface (keep only IPv4)
-echo "==> Removing IPv6 from main interface (keeping only IPv4)"
-sed -i '/^iface '"${WAN_IF}"' inet6 /,/^$/d' /etc/network/interfaces
+# Add VLAN 4000 (Hetzner private fabric)
+if ! grep -q "auto ${WAN_IF}.4000" /etc/network/interfaces; then
+  cat >> /etc/network/interfaces <<EOF
 
-add_or_update_block() {
-  local start_line="$1" content="$2"
-  if grep -qF "$start_line" /etc/network/interfaces; then
-    :
-  else
-    printf "\n%s\n" "$content" >> /etc/network/interfaces
-  fi
-}
-
-# VLAN 4000 (Hetzner private fabric)
-VLAN4000_BLOCK=$(cat <<EOF
 auto ${WAN_IF}.4000
 iface ${WAN_IF}.4000 inet static
   address ${PRIVATE_IPV4}
@@ -56,11 +53,15 @@ iface ${WAN_IF}.4000 inet6 static
   address ${PRIVATE_IPV6}
   netmask 108
 EOF
-)
-add_or_update_block "auto ${WAN_IF}.4000" "$VLAN4000_BLOCK"
+fi
 
-# vmbr0 IPv4 (no iptables post-up here anymore)
-VMBR0_BLOCK=$(cat <<EOF
+# Configure vmbr0 (remove existing and add new)
+if grep -q "auto vmbr0" /etc/network/interfaces; then
+  sed -i '/^auto vmbr0/,/^$/d' /etc/network/interfaces
+fi
+
+cat >> /etc/network/interfaces <<EOF
+
 auto vmbr0
 iface vmbr0 inet static
     address  10.0.0.1/16
@@ -71,42 +72,9 @@ iface vmbr0 inet static
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
     post-up   iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
     post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
-EOF
-)
-add_or_update_block "auto vmbr0" "$VMBR0_BLOCK"
-
-# vmbr0 IPv6 router address from WAN /64 (NDP proxy mode)
-if [[ -n "$V6CIDR" ]]; then
-  V6_PREFIX_FOR_DNS="$(python3 - <<'PY' "$V6CIDR"
-import ipaddress, sys
-iface=ipaddress.IPv6Interface(sys.argv[1])
-net=iface.network
-print(":".join(net.network_address.exploded.split(":")[0:4]))
-PY
-  )"
-  VMBR0_V6_ROUTER="${V6_PREFIX_FOR_DNS}::1/64"
-
-  if grep -qE '^iface vmbr0 inet6 ' /etc/network/interfaces; then
-    awk -v newaddr="$VMBR0_V6_ROUTER" '
-      BEGIN{inblk=0; added_postup=0}
-      /^iface vmbr0 inet6 /{print; inblk=1; next}
-      inblk && /^[[:space:]]*address[[:space:]]/ {print "    address " newaddr; inblk=0; next}
-      inblk && /^[[:space:]]*post-up.*ipv6.*forwarding/ {added_postup=1; next}
-      inblk && /^[[:space:]]*$/ && !added_postup {print "    post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding"; added_postup=1; next}
-      {print}
-    ' /etc/network/interfaces > /etc/network/interfaces.tmp && mv /etc/network/interfaces.tmp /etc/network/interfaces
-  else
-    cat >> /etc/network/interfaces <<EOF
-
-# IPv6 (WAN /64) for VMs (router address on vmbr0)
-iface vmbr0 inet6 static
-    address ${VMBR0_V6_ROUTER}
     post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+    post-up   echo 1 > /proc/sys/net/ipv6/conf/${WAN_IF}/proxy_ndp
 EOF
-  fi
-else
-  echo "WARN: No global IPv6 detected on ${WAN_IF}; skipping vmbr0 IPv6."
-fi
 
 # Apply network changes idempotently
 ifreload -a
@@ -149,31 +117,12 @@ systemctl enable networking
 #   systemctl enable --now ndppd
 # fi
 
-# # ---- dnsmasq (IPv4 DHCP + IPv6 RA/DHCPv6) ----
+# ---- Configure dnsmasq (IPv4 DHCP + IPv6 RA/DHCPv6) ----
+echo "==> Installing and configuring dnsmasq"
 apt-get install -y dnsmasq
-# echo "==> Waiting for vmbr0 to be UP"
-# for _ in $(seq 1 30); do
-#   if ip -br link show vmbr0 2>/dev/null | grep -q ' UP'; then
-#     break
-#   fi
-#   sleep 1
-# done
-# ip -br link show vmbr0 || { echo "ERROR: vmbr0 not present"; exit 1; }
 
-echo "==> Configuring dnsmasq on vmbr0 (IPv4 DHCP + IPv6 RA)"
-
-# Function to add configuration block if it doesn't exist
-add_dnsmasq_block() {
-  local marker="$1"
-  local config_file="/etc/dnsmasq.d/vmbr0.conf"
-  
-  if [[ ! -f "$config_file" ]] || ! grep -qF "$marker" "$config_file"; then
-    cat >> "$config_file"
-  fi
-}
-
-# IPv4 DHCP configuration (always add if not present)
-add_dnsmasq_block "interface=vmbr0" <<'EOF'
+# Create dnsmasq configuration
+cat > /etc/dnsmasq.d/vmbr0.conf <<EOF
 interface=vmbr0
 bind-interfaces
 dhcp-authoritative
@@ -183,23 +132,14 @@ dhcp-rapid-commit
 dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,1.1.1.1,8.8.8.8
-EOF
 
-# IPv6 RA + DHCPv6 configuration (only if IPv6 is available)
-if [[ -n "${V6_PREFIX_FOR_DNS:-}" ]]; then
-  add_dnsmasq_block "enable-ra" <<EOF
 # IPv6 RA + DHCPv6 (from WAN /64)
 enable-ra
 dhcp-range=${V6_PREFIX_FOR_DNS}::100,${V6_PREFIX_FOR_DNS}::1ff,64,12h
 dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
+ra-param=vmbr0,high,30,1800
 EOF
-else
-  echo "WARN: No global IPv6 detected on ${WAN_IF}; skipping IPv6 DHCP configuration."
-fi
 
-# Test config exactly like systemd does, then start
-#/usr/share/dnsmasq/systemd-helper checkconfig
-#systemctl enable dnsmasq || true
 systemctl restart dnsmasq
 
 # ---- L2 isolation on vmbr0 (bridge nft) ----
