@@ -74,6 +74,8 @@ iface vmbr0 inet static
     post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
     post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
     post-up   echo 1 > /proc/sys/net/ipv6/conf/${WAN_IF}/proxy_ndp
+    post-up   echo 1 > /proc/sys/net/ipv6/conf/vmbr0/forwarding
+    post-up   ip -6 route add ${V6_PREFIX_FOR_DNS}::/64 dev vmbr0
 EOF
 
 # Apply network changes idempotently
@@ -133,14 +135,80 @@ dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,1.1.1.1,8.8.8.8
 
-# IPv6 RA + DHCPv6 (from WAN /64)
-enable-ra
+# IPv6 DHCPv6 only (no RA, handled by radvd)
 dhcp-range=${V6_PREFIX_FOR_DNS}::100,${V6_PREFIX_FOR_DNS}::1ff,64,12h
 dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
-ra-param=vmbr0,high,30,1800
 EOF
 
 systemctl restart dnsmasq
+
+# Install and configure radvd for proper IPv6 Router Advertisements
+echo "==> Installing and configuring radvd for IPv6 Router Advertisements"
+apt-get install -y radvd
+
+# Create radvd configuration
+cat > /etc/radvd.conf <<EOF
+interface vmbr0 {
+    AdvSendAdvert on;
+    AdvManagedFlag off;
+    AdvOtherConfigFlag on;
+    
+    prefix ${V6_PREFIX_FOR_DNS}::/64 {
+        AdvOnLink on;
+        AdvAutonomous on;
+        AdvRouterAddr on;
+    };
+    
+    RDNSS ${V6_PREFIX_FOR_DNS}::2 {
+    };
+};
+EOF
+
+systemctl enable radvd
+systemctl restart radvd
+
+# Create a script to dynamically add NDP proxy entries for VM IPv6 addresses
+# cat > /usr/local/bin/add-vm-ipv6-proxy.sh <<EOF
+# #!/bin/bash
+# # Add NDP proxy entries for VM IPv6 addresses
+
+# # Function to add proxy for a specific IPv6 address
+# add_proxy() {
+#     local ipv6_addr="\$1"
+#     if [[ -n "\$ipv6_addr" ]]; then
+#         ip -6 neigh add proxy "\$ipv6_addr" dev ${WAN_IF} 2>/dev/null || true
+#     fi
+# }
+
+# # Add proxy entries for the DHCP range
+# for i in {100..255}; do
+#     add_proxy "${V6_PREFIX_FOR_DNS}::\$i"
+# done
+# EOF
+
+# chmod +x /usr/local/bin/add-vm-ipv6-proxy.sh
+
+# # Run the script to add proxy entries
+# /usr/local/bin/add-vm-ipv6-proxy.sh
+
+# # Make the script run automatically after network interfaces come up
+# cat > /etc/systemd/system/vm-ipv6-proxy.service <<EOF
+# [Unit]
+# Description=Add NDP proxy entries for VM IPv6 addresses
+# After=networking.service
+# Wants=networking.service
+
+# [Service]
+# Type=oneshot
+# ExecStart=/usr/local/bin/add-vm-ipv6-proxy.sh
+# RemainAfterExit=yes
+
+# [Install]
+# WantedBy=multi-user.target
+# EOF
+
+# systemctl enable vm-ipv6-proxy.service
+# systemctl start vm-ipv6-proxy.service
 
 # ---- L2 isolation on vmbr0 (bridge nft) ----
 # echo "==> Enabling L2 isolation on vmbr0 (tap<->tap drops, but allow VM<->host)"
