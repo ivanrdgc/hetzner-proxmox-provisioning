@@ -60,7 +60,7 @@ EOF
 add_or_update_block "auto ${WAN_IF}.4000" "$VLAN4000_BLOCK"
 
 # vmbr0 IPv4 (no iptables post-up here anymore)
-VMBR0_BLOCK=$(cat <<'EOF'
+VMBR0_BLOCK=$(cat <<EOF
 auto vmbr0
 iface vmbr0 inet static
     address  10.0.0.1/16
