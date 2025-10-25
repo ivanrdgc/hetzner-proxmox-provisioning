@@ -45,9 +45,8 @@ echo "vmbr0 gateway IPv6 will be: ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}"
 ############################################
 # 3. Network interfaces
 ############################################
-echo "==> Configuring VLAN 4000 + vmbr0 (IPv4 NAT + IPv6 routed)"
+echo "==> Configuring VLAN 4000 + vmbr0 (IPv4 NAT + IPv6)"
 
-# 3a. Hetzner private VLAN 4000 interface (L2 private network)
 if ! grep -q "auto ${WAN_IF}.4000" /etc/network/interfaces; then
 cat >> /etc/network/interfaces <<EOF
 
@@ -64,11 +63,10 @@ iface ${WAN_IF}.4000 inet6 static
 EOF
 fi
 
-# 3b. vmbr0 bridge (no physical ports!)
-# - IPv4: 10.0.0.1/16 with NAT out via WAN_IF
-# - IPv6: ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}, acts as router for VMs in same /64
-# We explicitly enable forwarding + proxy_ndp on WAN_IF
 if ! grep -q "auto vmbr0" /etc/network/interfaces; then
+sed -i -e "/^iface ${WAN_IF} inet6 static$/,/^$/{
+    s/^\([[:space:]]*netmask[[:space:]]\)64$/\1128/
+}" /etc/network/interfaces
 cat >> /etc/network/interfaces <<EOF
 
 auto vmbr0
@@ -77,22 +75,13 @@ iface vmbr0 inet static
     bridge-ports none
     bridge-stp off
     bridge-fd 0
-    # IPv4 forwarding + NAT
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
     post-up   iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
     post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
 
 iface vmbr0 inet6 static
     address ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}
-    # Make sure Linux behaves like a router for IPv6:
-    post-up   sysctl -w net.ipv6.conf.all.forwarding=1
-    post-up   sysctl -w net.ipv6.conf.${WAN_IF}.forwarding=1
-    post-up   sysctl -w net.ipv6.conf.vmbr0.forwarding=1
-    # Allow proxy NDP on uplink so we can claim VM IPs toward Hetzner:
-    post-up   sysctl -w net.ipv6.conf.${WAN_IF}.proxy_ndp=1
-    pre-down  sysctl -w net.ipv6.conf.${WAN_IF}.proxy_ndp=0
-    # Ensure the /64 is always considered on vmbr0 (belt+braces):
-    post-up   ip -6 route replace ${VM_V6_SUBNET}::/${VM_V6_PREFIXLEN} dev vmbr0 || true
+    post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
 EOF
 fi
 
@@ -120,74 +109,3 @@ dhcp-option=6,1.1.1.1,8.8.8.8
 EOF
 
 systemctl restart dnsmasq
-
-############################################
-# 5. radvd: advertise IPv6 /64 to VMs
-############################################
-echo "==> Installing and configuring radvd (IPv6 RA for guests)"
-apt-get install -y radvd
-
-cat > /etc/radvd.conf <<EOF
-interface vmbr0 {
-    AdvSendAdvert on;
-    MaxRtrAdvInterval 10;
-    AdvManagedFlag off;
-    AdvOtherConfigFlag off;
-    AdvDefaultLifetime 1800;
-    AdvDefaultPreference medium;
-
-    # Tell VMs: "${VM_V6_SUBNET}::/64 is on-link, SLAAC allowed,
-    # and ${VM_V6_GATEWAY} is the router"
-    prefix ${VM_V6_SUBNET}::/${VM_V6_PREFIXLEN} {
-        AdvOnLink on;
-        AdvAutonomous on;
-        AdvRouterAddr on;
-    };
-
-    # Public DNS over IPv6 for guests
-    RDNSS 2606:4700:4700::1111 2001:4860:4860::8888 {
-    };
-};
-EOF
-
-systemctl restart radvd
-
-############################################
-# 6. ndppd: prep for NDP proxy
-############################################
-echo "==> Installing ndppd (NDP proxy helper)"
-apt-get install -y ndppd
-
-# We are going to manage ndppd with a native systemd unit (not the legacy SysV shim),
-# and we will run it in foreground mode so it doesn't double-fork and vanish.
-
-# Create ndppd.conf:
-# NOTE:
-#  - We leave 'static' section empty for now.
-#    Later, you will add lines per-VM like:
-#        static {
-#            2a01:4f9:3071:1529::abcd vmbr0
-#        }
-#    OR we can generate them automatically when provisioning each VM.
-cat > /etc/ndppd.conf <<EOF
-loglevel info
-
-proxy ${WAN_IF} {
-    rule ${VM_V6_SUBNET}::/${VM_V6_PREFIXLEN} {
-        iface vmbr0
-        router yes
-
-        # static {
-        #     2a01:4f9:3071:1529::VMVM vmbr0
-        # }
-    }
-}
-EOF
-
-systemctl restart ndppd
-
-echo "==> Bootstrap networking complete."
-echo "WAN_IF:            ${WAN_IF}"
-echo "WAN_V6_ADDR:       ${WAN_V6_ADDR}/${WAN_V6_PREFIXLEN}"
-echo "Guest prefix:      ${VM_V6_SUBNET}::/${VM_V6_PREFIXLEN}"
-echo "vmbr0 IPv6 router: ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}"
