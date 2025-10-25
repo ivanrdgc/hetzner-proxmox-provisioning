@@ -114,3 +114,46 @@ dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
 EOF
 
 systemctl restart dnsmasq
+
+# ---- Proxmox firewall: datacenter baseline with IPv6 ipset gating ----
+echo "==> Configuring Proxmox firewall (datacenter baseline)"
+cat >/etc/pve/firewall/cluster.fw <<'EOF'
+[OPTIONS]
+
+policy_forward: DROP
+policy_in: DROP
+enable: 1
+policy_out: ACCEPT
+
+[ALIASES]
+
+Hetzner-Internal-v4 10.64.0.0/12
+Hetzner-Internal-v6 fd00:4000::/108
+VM-Gateway-v4 10.0.0.1
+VM-Internal-v4 10.0.0.0/16
+
+[RULES]
+
+GROUP management
+GROUP vm-nat
+GROUP hetzner-internal
+
+[group hetzner-internal]
+
+IN ACCEPT -source dc/hetzner-internal-v6 -dest dc/hetzner-internal-v6 -log nolog
+IN ACCEPT -source dc/hetzner-internal-v4 -dest dc/hetzner-internal-v4 -log nolog
+
+[group management]
+
+IN PMG(ACCEPT) -log nolog
+IN SSH(ACCEPT) -log nolog
+
+[group vm-nat]
+
+IN DHCPfwd(ACCEPT) -log nolog
+IN ACCEPT -source dc/vm-gateway-v4 -dest dc/vm-internal-v4 -log nolog
+IN ACCEPT -source dc/vm-internal-v4 -dest dc/vm-gateway-v4 -log nolog
+EOF
+
+# Enable firewall at both scopes and start it
+pve-firewall restart || true
