@@ -154,6 +154,7 @@ IN ACCEPT -source dc/nat-gateway -log nolog
 
 [group vm-no-internet]
 
+IN SSH(ACCEPT) -log nolog
 IN RDP(ACCEPT) -dest 0.0.0.0/0 -log nolog
 IN DROP -log nolog
 OUT DROP -log nolog
@@ -165,3 +166,78 @@ EOF
 
 # Enable firewall at both scopes and start it
 pve-firewall restart || true
+
+# ---- Cluster-wide snippets storage + dynamic RDP hookscript ----
+echo "==> Installing cluster-wide hookscript for dynamic RDP DNAT + INPUT open/close"
+mkdir -p /etc/pve/snippets
+if ! pvesm status | awk '{print $1}' | grep -qx snippets-shared; then
+  pvesm add dir snippets-shared --path /etc/pve/snippets --content snippets || true
+fi
+
+apt-get install -y jq
+
+# Always overwrite to keep latest version
+cat >/etc/pve/snippets/rdp-dnat.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+VMID="$1"; PHASE="$2"
+PORT=$((20000 + VMID))
+NODE=$(hostname)
+RULE_COMMENT="rdp vmid-${VMID}"
+
+vm_ipv4() {
+  for _ in $(seq 1 20); do
+    if out=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null); then
+      ip=$(echo "$out" | jq -r '.[]?."ip-addresses"[]? | select(."ip-address-type"=="ipv4") | .address' \
+           | grep -E '^10\.0\.[0-9]+\.[0-9]+$' | head -n1 || true)
+      [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+fw_add_dnat() {
+  local ip="$1"
+
+  # Remove any existing rule with the same comment
+  fw_del_dnat
+
+  # Add DNAT rule to host firewall
+  pvesh create "/nodes/${NODE}/firewall/rules" \
+    --type in \
+    --action ACCEPT \
+    --iface eno1 \
+    --proto tcp \
+    --dport "$PORT" \
+    --target DNAT \
+    --to "${ip}:3389" \
+    --comment "$RULE_COMMENT" \
+    --pos 0 >/dev/null
+}
+
+fw_del_dnat() {
+  rules=$(pvesh get "/nodes/${NODE}/firewall/rules" --output-format json)
+  echo "$rules" | jq -r '.[] | select(.comment=="'"$RULE_COMMENT"'") | .pos' | \
+    while read -r pos; do
+      pvesh delete "/nodes/${NODE}/firewall/rules/${pos}" || true
+    done
+}
+
+case "$PHASE" in
+  post-start)
+    ip=$(vm_ipv4) || { echo "WARN: no VM IPv4 found for VMID $VMID"; exit 0; }
+    echo "Setting DNAT for port $PORT to ${ip}:3389"
+    fw_add_dnat "$ip"
+    ;;
+  pre-stop|post-stop)
+    echo "Removing DNAT for VMID $VMID"
+    fw_del_dnat
+    ;;
+  *)
+    echo "Unsupported phase: $PHASE" >&2
+    exit 1
+    ;;
+esac
+EOF
