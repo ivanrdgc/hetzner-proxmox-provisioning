@@ -169,15 +169,15 @@ pve-firewall restart || true
 
 # ---- Cluster-wide snippets storage + dynamic RDP hookscript ----
 echo "==> Installing cluster-wide hookscript for dynamic RDP DNAT + INPUT open/close"
-mkdir -p /etc/pve/snippets
-if ! pvesm status | awk '{print $1}' | grep -qx snippets-shared; then
-  pvesm add dir snippets-shared --path /etc/pve/snippets --content snippets || true
+mkdir -p /var/lib/svz
+if ! pvesm status | awk '{print $1}' | grep -x shared; then
+  pvesm add dir shared --path /var/lib/svz --content snippets --shared true || true
 fi
 
 apt-get install -y jq
 
 # Always overwrite to keep latest version
-cat >/etc/pve/snippets/auto-dnat.sh <<'EOF'
+cat >/var/lib/svz/snippets/auto-dnat.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -253,3 +253,5 @@ case "$PHASE" in
     ;;
 esac
 EOF
+
+chmod +x /var/lib/svz/snippets/auto-dnat.sh
