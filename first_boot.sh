@@ -77,7 +77,9 @@ iface vmbr0 inet static
     bridge-fd 0
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
     post-up   iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
+    post-up   iptables -t raw -I PREROUTING -i fwbr+ -j CT --zone 1
     post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
+    post-down iptables -t raw -D PREROUTING -i fwbr+ -j CT --zone 1
 
 iface vmbr0 inet6 static
     address ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}
@@ -120,39 +122,45 @@ echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
 [OPTIONS]
 
+policy_out: ACCEPT
+enable: 1
 policy_forward: DROP
 policy_in: DROP
-enable: 1
-policy_out: ACCEPT
 
 [ALIASES]
 
-Hetzner-Internal-v4 10.64.0.0/12
-Hetzner-Internal-v6 fd00:4000::/108
-VM-Gateway-v4 10.0.0.1
-VM-Internal-v4 10.0.0.0/16
+NAT-Gateway 10.0.0.1
+
+[IPSET hetzner-internal]
+
+10.64.0.0/12
+fd00:4000::/108
 
 [RULES]
 
 GROUP management
-GROUP vm-nat
-GROUP hetzner-internal
-
-[group hetzner-internal]
-
-IN ACCEPT -source dc/hetzner-internal-v6 -dest dc/hetzner-internal-v6 -log nolog
-IN ACCEPT -source dc/hetzner-internal-v4 -dest dc/hetzner-internal-v4 -log nolog
+IN ACCEPT -source +dc/hetzner-internal -log nolog
+IN ACCEPT -i vmbr0 -log nolog
 
 [group management]
 
 IN PMG(ACCEPT) -log nolog
 IN SSH(ACCEPT) -log nolog
 
-[group vm-nat]
+[group vm-default]
 
 IN DHCPfwd(ACCEPT) -log nolog
-IN ACCEPT -source dc/vm-gateway-v4 -dest dc/vm-internal-v4 -log nolog
-IN ACCEPT -source dc/vm-internal-v4 -dest dc/vm-gateway-v4 -log nolog
+IN ACCEPT -source dc/nat-gateway -log nolog
+
+[group vm-no-internet]
+
+IN RDP(ACCEPT) -dest 0.0.0.0/0 -log nolog
+IN DROP -log nolog
+OUT DROP -log nolog
+
+[group vm-public-ipv6]
+
+IN ACCEPT -source ::/0 -log nolog
 EOF
 
 # Enable firewall at both scopes and start it
