@@ -247,7 +247,7 @@ case "$PHASE" in
     fw_add_iptables_rules "$ip"
     ;;
 
-  pre-stop|post-stop)
+  post-stop)
     get_rule_comment_and_port
     echo "[INFO] Removing iptables DNAT rules for VMID $VMID"
     fw_remove_iptables_rules
