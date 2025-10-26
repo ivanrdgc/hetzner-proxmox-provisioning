@@ -177,14 +177,28 @@ fi
 apt-get install -y jq
 
 # Always overwrite to keep latest version
-cat >/etc/pve/snippets/rdp-dnat.sh <<'EOF'
+cat >/etc/pve/snippets/auto-dnat.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 VMID="$1"; PHASE="$2"
 PORT=$((20000 + VMID))
 NODE=$(hostname)
-RULE_COMMENT="rdp vmid-${VMID}"
+
+TO_PORT=22
+RULE_COMMENT="ssh vmid-${VMID}"
+
+get_rule_comment_and_port() {
+  local ostype
+  ostype=$(qm config "$VMID" | awk -F': ' '/^ostype:/{print $2}')
+  if [[ "$ostype" == win* ]]; then
+    TO_PORT=3389
+    RULE_COMMENT="rdp vmid-${VMID}"
+  else
+    TO_PORT=22
+    RULE_COMMENT="ssh vmid-${VMID}"
+  fi
+}
 
 vm_ipv4() {
   for _ in $(seq 1 20); do
@@ -200,11 +214,7 @@ vm_ipv4() {
 
 fw_add_dnat() {
   local ip="$1"
-
-  # Remove any existing rule with the same comment
   fw_del_dnat
-
-  # Add DNAT rule to host firewall
   pvesh create "/nodes/${NODE}/firewall/rules" \
     --type in \
     --action ACCEPT \
@@ -212,7 +222,7 @@ fw_add_dnat() {
     --proto tcp \
     --dport "$PORT" \
     --target DNAT \
-    --to "${ip}:3389" \
+    --to "${ip}:${TO_PORT}" \
     --comment "$RULE_COMMENT" \
     --pos 0 >/dev/null
 }
@@ -227,12 +237,14 @@ fw_del_dnat() {
 
 case "$PHASE" in
   post-start)
+    get_rule_comment_and_port
     ip=$(vm_ipv4) || { echo "WARN: no VM IPv4 found for VMID $VMID"; exit 0; }
-    echo "Setting DNAT for port $PORT to ${ip}:3389"
+    echo "Setting DNAT for port $PORT to ${ip}:${TO_PORT} ($RULE_COMMENT)"
     fw_add_dnat "$ip"
     ;;
   pre-stop|post-stop)
-    echo "Removing DNAT for VMID $VMID"
+    get_rule_comment_and_port
+    echo "Removing DNAT for VMID $VMID ($RULE_COMMENT)"
     fw_del_dnat
     ;;
   *)
