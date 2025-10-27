@@ -4,6 +4,10 @@ import json
 import ipaddress
 import re
 import shlex
+import sys
+import time
+import logging
+from pathlib import Path
 
 # Constants
 DNAT_PREFIX = "vmid-"
@@ -11,12 +15,47 @@ BRIDGE_NET = "10.0.0.0/16"
 BASE_PORT = 20000
 NODE_NAME = subprocess.getoutput("hostname")
 
+# Set up logging
+SCRIPT_DIR = Path(__file__).parent.resolve()
+LOG_FILE = SCRIPT_DIR / "sync-dnat.log"
+MAX_LOG_SIZE = 1024 * 1024  # 1 MB
+
+def clean_log_if_needed():
+    """Delete log file if it exceeds MAX_LOG_SIZE."""
+    if LOG_FILE.exists():
+        size = LOG_FILE.stat().st_size
+        if size > MAX_LOG_SIZE:
+            LOG_FILE.unlink()
+            return True  # Indicates cleanup happened
+    return False
+
+# Clean log before setting up logging
+was_cleaned = clean_log_if_needed()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, mode='a'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Log cleanup if it happened
+if was_cleaned:
+    logger.info("Log file deleted due to size limit (> 1 MB)")
+
 # ---------------------------------------------------------------
 # Helper utils
 # ---------------------------------------------------------------
 
-def run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+def run(cmd, check=True):
+    result = subprocess.run(cmd, capture_output=True, text=True, check=check)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    return result.stdout.strip()
 
 def normalize_rule(rule: str) -> str:
     """Normalize rule text for reliable comparison (ignore order, masks, -m tcp)."""
@@ -59,8 +98,49 @@ def get_vm_info(vmid):
                 if ip and ipaddress.ip_address(ip).version == 4:
                     if ipaddress.ip_address(ip) in ipaddress.ip_network(BRIDGE_NET):
                         return {"ip": ip, "ostype": ostype}
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 2:
+            # Exit code 2 means no guest agent, exit immediately
+            raise Exception(f"VM {vmid} has no guest agent installed")
+        elif e.returncode == 255:
+            # Exit code 255 means guest agent not ready yet, keep waiting
+            logger.debug(f"Guest agent not ready for VM {vmid} (exit code 255)")
+            return None
+        else:
+            logger.warning(f"Failed to get info for VM {vmid}: {e}")
+            return None
+    except json.JSONDecodeError as e:
+        # Handle JSON decode errors
+        logger.warning(f"Failed to parse network interfaces for VM {vmid}: {e}")
+        return None
     except Exception as e:
-        print(f"[WARN] Failed to get info for VM {vmid}: {e}")
+        # Only catch other exceptions if it's not our "no guest agent" exception
+        if "no guest agent" not in str(e).lower():
+            logger.warning(f"Failed to get info for VM {vmid}: {e}")
+            return None
+        raise  # Re-raise "no guest agent" exception
+    return None
+
+def wait_for_vm_ip(vmid, max_wait=600, initial_wait=1):
+    """Wait for a VM to get an IP, with exponential backoff."""
+    start = time.time()
+    wait_time = initial_wait
+    
+    while time.time() - start < max_wait:
+        try:
+            info = get_vm_info(vmid)
+            if info:
+                return info
+            logger.info(f"VM {vmid} has no IP yet, waiting {wait_time}s...")
+        except Exception as e:
+            # If VM has no guest agent, exit immediately
+            logger.error(str(e))
+            raise  # Re-raise to exit immediately
+        
+        time.sleep(wait_time)
+        wait_time = min(wait_time * 2, 30)  # exponential backoff, max 30s
+    
+    logger.error(f"VM {vmid} did not get an IP within {max_wait}s")
     return None
 
 # ---------------------------------------------------------------
@@ -108,7 +188,7 @@ def delete_rule_by_comment(comment, table):
             # example: -A PREROUTING -i eno1 ...
             args = shlex.split(line)
             args[0] = "-D"  # replace -A with -D
-            print(f"[DEL] {' '.join(args)}")
+            logger.info(f"DEL: {' '.join(args)}")
             subprocess.run(["iptables", "-t", table] + args, check=False)
 
 def sync_iptables_rules(expected, actual, table):
@@ -125,7 +205,7 @@ def sync_iptables_rules(expected, actual, table):
 
     # add missing rules
     for rule in sorted(to_add):
-        print(f"[ADD] {rule}")
+        logger.info(f"ADD: {rule}")
         subprocess.run(["iptables", "-t", table] + shlex.split(rule), check=True)
 
 # ---------------------------------------------------------------
@@ -137,7 +217,7 @@ def get_existing_fw_rules():
         out = run(["pvesh", "get", f"/nodes/{NODE_NAME}/firewall/rules", "--output-format", "json"])
         return json.loads(out)
     except Exception as e:
-        print(f"[WARN] Could not get firewall rules: {e}")
+        logger.warning(f"Could not get firewall rules: {e}")
         return []
 
 def add_fw_accept_rule(port, comment, iface):
@@ -151,7 +231,7 @@ def add_fw_accept_rule(port, comment, iface):
         ):
             return  # exists
 
-    print(f"[ADD] FW ACCEPT port {port} ({comment})")
+    logger.info(f"FW ACCEPT port {port} ({comment})")
     subprocess.run([
         "pvesh", "create", f"/nodes/{NODE_NAME}/firewall/rules",
         "--type", "in",
@@ -172,7 +252,7 @@ def cleanup_stale_fw_rules(active_vmids):
             vmid = int(m.group(2))
             if vmid not in active_vmids:
                 pos = rule["pos"]
-                print(f"[DEL] FW rule {comment} (pos {pos})")
+                logger.info(f"FW DEL rule {comment} (pos {pos})")
                 subprocess.run(["pvesh", "delete", f"/nodes/{NODE_NAME}/firewall/rules/{pos}"], check=True)
 
 # ---------------------------------------------------------------
@@ -180,19 +260,55 @@ def cleanup_stale_fw_rules(active_vmids):
 # ---------------------------------------------------------------
 
 def main():
+    # Handle arguments from Proxmox hook
+    triggered_vmid = None
+    phase = None
+    
+    if len(sys.argv) >= 3:
+        triggered_vmid = int(sys.argv[1])
+        phase = sys.argv[2]
+        
+        # Exit immediately for anything other than post-stop and post-start
+        if phase not in ["post-stop", "post-start"]:
+            logger.info(f"Phase {phase} - exiting immediately")
+            return
+        
+        logger.info(f"Hook triggered: VM {triggered_vmid}, phase {phase}")
+    
     wan_if = get_default_wan_if()
-    print(f"[INFO] WAN interface: {wan_if}")
+    logger.info(f"WAN interface: {wan_if}")
 
     vmids = get_running_vms()
-    print(f"[INFO] Running VMs: {vmids}")
+    logger.info(f"Running VMs: {vmids}")
 
     vm_infos = {}
     for vmid in vmids:
-        info = get_vm_info(vmid)
-        if info:
-            vm_infos[vmid] = info
+        # For post-start, wait for the triggered VM to get an IP
+        if phase == "post-start" and vmid == triggered_vmid:
+            logger.info(f"Waiting for triggered VM {vmid} to get IP...")
+            try:
+                info = wait_for_vm_ip(vmid)
+                if info:
+                    vm_infos[vmid] = info
+                else:
+                    logger.warning(f"VM {vmid} did not get an IP, skipping")
+            except Exception as e:
+                if "no guest agent" in str(e).lower():
+                    logger.error(f"VM {vmid} has no guest agent - exiting immediately")
+                    return
+                raise
         else:
-            print(f"[WARN] No internal IP for VM {vmid}")
+            try:
+                info = get_vm_info(vmid)
+                if info:
+                    vm_infos[vmid] = info
+                else:
+                    logger.warning(f"No internal IP for VM {vmid}")
+            except Exception as e:
+                if "no guest agent" in str(e).lower():
+                    logger.warning(f"VM {vmid} has no guest agent - skipping")
+                else:
+                    raise
 
     expected_nat, expected_filter = build_expected_rules(vm_infos, wan_if)
     actual = parse_iptables_rules()
@@ -208,7 +324,7 @@ def main():
         add_fw_accept_rule(port, comment, wan_if)
 
     cleanup_stale_fw_rules(vm_infos.keys())
-    print("[INFO] Sync complete.")
+    logger.info("Sync complete.")
 
 if __name__ == "__main__":
     main()
