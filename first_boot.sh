@@ -174,87 +174,10 @@ if ! pvesm status | awk '{print $1}' | grep -x shared; then
   pvesm add dir shared --path /var/lib/svz --content snippets --shared true || true
 fi
 
-apt-get install -y jq
-
 # Always overwrite to keep latest version
-cat >/var/lib/svz/snippets/auto-dnat.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/sync-dnat.py \
+    -o /var/lib/svz/snippets/sync-dnat.py
 
-VMID="$1"; PHASE="$2"
-PORT=$((20000 + VMID))
-NODE=$(hostname)
+chmod +x /var/lib/svz/snippets/sync-dnat.py
 
-TO_PORT=22
-RULE_COMMENT="ssh-vmid-${VMID}"
-WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')
-if [[ -z "${WAN_IF:-}" ]]; then
-    echo "ERROR: Cannot detect WAN interface"
-    exit 1
-fi
-
-get_rule_comment_and_port() {
-  local ostype
-  ostype=$(qm config "$VMID" | awk -F': ' '/^ostype:/{print $2}')
-  if [[ "$ostype" == win* ]]; then
-    TO_PORT=3389
-    RULE_COMMENT="rdp-vmid-${VMID}"
-  fi
-}
-
-vm_ipv4() {
-  for _ in $(seq 1 20); do
-    if out=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null); then
-      ip=$(echo "$out" | jq -r '.[]?."ip-addresses"[]? | select(."ip-address-type"=="ipv4") | ."ip-address"' \
-           | grep -E '^10\.0\.[0-9]+\.[0-9]+$' | head -n1 || true)
-      [[ -n "$ip" ]] && { echo "$ip"; return 0; }
-    fi
-    sleep 2
-  done
-  return 1
-}
-
-fw_add_iptables_rules() {
-  local ip="$1"
-
-  # Avoid duplicates by deleting any previous rules
-  fw_remove_iptables_rules
-
-  echo "[INFO] Adding iptables DNAT: ${WAN_IF}:${PORT} → ${ip}:${TO_PORT}"
-
-  iptables -t nat -A PREROUTING -i "$WAN_IF" -p tcp --dport "$PORT" \
-    -j DNAT --to-destination "${ip}:${TO_PORT}" -m comment --comment "$RULE_COMMENT"
-
-  iptables -I FORWARD -p tcp -d "$ip" --dport "$TO_PORT" \
-    -j ACCEPT -m comment --comment "$RULE_COMMENT"
-}
-
-fw_remove_iptables_rules() {
-  while iptables -t nat -D PREROUTING -p tcp -i "$WAN_IF" --dport "$PORT" \
-    -j DNAT --to-destination "$(vm_ipv4):$TO_PORT" -m comment --comment "$RULE_COMMENT" 2>/dev/null; do :; done
-
-  while iptables -D FORWARD -p tcp -d "$(vm_ipv4)" --dport "$TO_PORT" \
-    -j ACCEPT -m comment --comment "$RULE_COMMENT" 2>/dev/null; do :; done
-}
-
-case "$PHASE" in
-  post-start)
-    get_rule_comment_and_port
-    ip=$(vm_ipv4) || {
-      echo "[WARN] No internal IP found for VMID $VMID"
-      exit 0
-    }
-    fw_add_iptables_rules "$ip"
-    ;;
-
-  post-stop)
-    get_rule_comment_and_port
-    echo "[INFO] Removing iptables DNAT rules for VMID $VMID"
-    fw_remove_iptables_rules
-    ;;
-esac
-EOF
-
-chmod +x /var/lib/svz/snippets/auto-dnat.sh
-
-# manually add with: qm set 100 --hookscript shared:snippets/auto-dnat.sh
+# manually add with: qm set 100 --hookscript shared:snippets/sync-dnat.py
