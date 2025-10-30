@@ -240,10 +240,12 @@ def add_fw_accept_rule(port, comment, iface):
         "--proto", "tcp",
         "--dport", str(port),
         "--comment", comment,
-        "--pos", "0"
+        "--pos", "0",
+        "--enable", "1"
     ], check=True)
 
 def cleanup_stale_fw_rules(active_vmids):
+    rules_deleted = False
     rules = get_existing_fw_rules()
     for rule in rules:
         comment = rule.get("comment", "")
@@ -254,6 +256,8 @@ def cleanup_stale_fw_rules(active_vmids):
                 pos = rule["pos"]
                 logger.info(f"FW DEL rule {comment} (pos {pos})")
                 subprocess.run(["pvesh", "delete", f"/nodes/{NODE_NAME}/firewall/rules/{pos}"], check=True)
+                rules_deleted = True
+    return rules_deleted
 
 # ---------------------------------------------------------------
 # Main logic
@@ -318,12 +322,21 @@ def main():
     sync_iptables_rules(expected_filter, actual["filter"], "filter")
 
     # Sync firewall
+    rules_modified = False
     for vmid, info in vm_infos.items():
         port = BASE_PORT + vmid
         comment = f"{'rdp' if info['ostype'].startswith('win') else 'ssh'}-vmid-{vmid}"
         add_fw_accept_rule(port, comment, wan_if)
+        rules_modified = True
 
-    cleanup_stale_fw_rules(vm_infos.keys())
+    if cleanup_stale_fw_rules(vm_infos.keys()):
+        rules_modified = True
+
+    if rules_modified:
+        logger.info("Restarting pve-firewall")
+        subprocess.run(["pve-firewall", "stop"], check=True)
+        subprocess.run(["pve-firewall", "start"], check=True)
+
     logger.info("Sync complete.")
 
 if __name__ == "__main__":
