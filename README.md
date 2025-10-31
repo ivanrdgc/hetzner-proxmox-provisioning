@@ -31,23 +31,12 @@ setx JAVA_TOOL_OPTIONS "-Djava.awt.headless=true" /M
 
 ## Winget update fix for Sysprep
 ```powershell
-# List the winget-related packages that are per-user
-Get-AppxPackage *winget* | Select Name, PackageFullName
-
-# Remove them from the current user
-Get-AppxPackage *winget* | Remove-AppxPackage -ErrorAction SilentlyContinue
-
-# Also remove them from the provisioned list (just in case)
-Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like "*winget*" | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
-
-# Check AppInstaller too
-Get-AppxPackage *AppInstaller* | Remove-AppxPackage -ErrorAction SilentlyContinue
-Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like "*AppInstaller*" | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+Get-AppxPackage *winget* | Remove-AppxPackage
 ```
 
 ## Sysprep
 
 ```powershell
 cd C:\Windows\System32\Sysprep
-.\sysprep.exe /generalize /oobe /shutdown /unattend:C:\Windows\unattend.xml /unattend:C:\Windows\unattend.xml
+.\sysprep.exe /generalize /oobe /shutdown /unattend:C:\Windows\unattend.xml
 ```
