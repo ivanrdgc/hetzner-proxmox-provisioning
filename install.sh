@@ -50,7 +50,7 @@ echo "Private IPv6: $PRIVATE_IPV6"
 
 # Hard-coded defaults
 IMAGE="/root/images/Debian-1300-trixie-amd64-base.tar.gz"
-PARTSPEC="/boot/efi:esp:256M,/:ext4:all"
+PARTSPEC="/boot/efi:esp:256M,/:zfs:all"
 
 # Create a wrapper script that substitutes the IPs and runs chroot_config.sh
 cat > /root/chroot_wrapper.sh << EOF
