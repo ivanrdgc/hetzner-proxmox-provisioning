@@ -43,7 +43,7 @@ detect_firmware() {
 ### --- STEP 1: prepare environment ----------------------------------
 
 log "Checking required tools"
-require_cmd wget lsblk awk ip zpool zfs
+require_cmd wget lsblk awk ip zpool zfs dmidecode udevadm
 
 log "Installing qemu, OVMF, and proxmox-auto-install-assistant (this may take a bit)..."
 
@@ -181,8 +181,123 @@ log "Generating /etc/network/interfaces using Hetzner network_config.functions.s
 # This will look at the current Rescue networking and predict the final
 # NIC name (via predict-check), then write the interfaces file with both
 # IPv4 and IPv6 in Hetzner's routed style.
+
+# Set up required environment variables for network_config.functions.sh
+export COMPANY="Hetzner Online GmbH"
+export IAM="debian"  # Required for setup_etc_network_interfaces to work
+export IMG_VERSION=0  # Not critical for Debian/Ubuntu
+export IPV4_ONLY=0
+export DNSRESOLVER=("185.12.64.1" "185.12.64.2")
+export DNSRESOLVER_V6=("2a01:4ff:ff00::add:1" "2a01:4ff:ff00::add:2")
+export DEBUGFILE="/tmp/installimage_debug.log"
+
+# Detect system type for is_virtual_machine() function
+export SYSTYPE="$(dmidecode -s system-product-name 2>/dev/null | tail -n1 || echo '')"
+export SYSMFC="$(dmidecode -s system-manufacturer 2>/dev/null | tail -n1 || echo '')"
+
+# Simple debug function (network_config.functions.sh requires it)
+debug() {
+  local line="${@}"
+  printf '[%(%H:%M:%S)T] %s\n' -1 "${line}" >> "${DEBUGFILE}" 2>/dev/null || true
+}
+
+# Simple debugoutput function (for stderr redirection)
+debugoutput() {
+  while read -r line; do
+    printf '[%(%H:%M:%S)T] :   %s\n' -1 "${line}" >> "${DEBUGFILE}" 2>/dev/null || true
+  done
+}
+
+# is_virtual_machine function (required by network_config.functions.sh)
+is_virtual_machine() {
+  case "$SYSTYPE" in
+    vServer|Bochs|Xen|KVM|VirtualBox|'VMware,Inc.')
+      return 0;;
+    *)
+      case "$SYSMFC" in
+        QEMU)
+          return 0;;
+        *)
+          return 1;;
+      esac
+      return 1;;
+  esac
+}
+
+# Stub functions that might be referenced but aren't critical for Debian
+# (predict_network_interface_name uses early return for Debian, so these won't be called)
+image_i40e_driver_exposes_port_name() { return 1; }
+image_ice_driver_exposes_port_name() { return 1; }
+installed_os_systemd_version() { echo "0"; }
+systemd_nspawn_wo_debug() { return 1; }
+
+# Source the network functions
 source "$NETWORK_FUNCS"
+
+# Override predict_network_interface_name to use udevadm directly (like predict-check)
+# The original function tries to use systemd_nspawn which doesn't work in our context
+# We'll use udevadm test-builtin net_id directly on the host system
+predict_network_interface_name() {
+  local network_interface="$1"
+  
+  # Use udevadm directly on the host system (same as predict-check script)
+  local network_interface_driver=""
+  if [ -d "/sys/class/net/$network_interface/device/driver" ]; then
+    network_interface_driver="$(basename "$(readlink -f "/sys/class/net/$network_interface/device/driver")" 2>/dev/null || echo "")"
+  fi
+  
+  # Run udevadm test-builtin net_id (same as predict-check)
+  local d="$(echo; udevadm test-builtin net_id "/sys/class/net/$network_interface" 2>/dev/null)"
+  
+  # Try to extract predicted name from udevadm output (same priority as predict-check)
+  local predicted_name=""
+  
+  [[ "$d" =~ $'\n'ID_NET_NAME_ONBOARD=([^$'\n']+) ]] && predicted_name="${BASH_REMATCH[1]}" && echo "$predicted_name" && return 0
+  [[ "$d" =~ $'\n'ID_NET_NAME_SLOT=([^$'\n']+) ]] && predicted_name="${BASH_REMATCH[1]}" && echo "$predicted_name" && return 0
+  
+  # Convert ID_NET_NAME_PATH to ID_NET_NAME_SLOT for e1000 and 8139cp
+  if [[ "$network_interface_driver" =~ ^(e1000|8139cp)$ ]] && [[ "$d" =~ $'\n'ID_NET_NAME_PATH=([a-z]{2})p0([^$'\n']+) ]]; then
+    predicted_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    echo "$predicted_name"
+    return 0
+  fi
+  
+  [[ "$d" =~ $'\n'ID_NET_NAME_PATH=([^$'\n']+) ]] && predicted_name="${BASH_REMATCH[1]}" && echo "$predicted_name" && return 0
+  [[ "$d" =~ $'\n'ID_NET_NAME_MAC=([^$'\n']+) ]] && predicted_name="${BASH_REMATCH[1]}" && echo "$predicted_name" && return 0
+  
+  # Fallback: if udevadm fails or returns nothing, use the original interface name
+  echo "$network_interface"
+  return 0
+}
+
+# Verify we can detect network interfaces
+log "Detecting network interfaces..."
+if ! physical_network_interfaces | head -1 > /dev/null; then
+  die "Failed to detect any physical network interfaces"
+fi
+
+log "Found network interfaces: $(physical_network_interfaces | tr '\n' ' ')"
+
+# Test the function to ensure it works
+FIRST_IF=$(physical_network_interfaces | head -1)
+if [ -z "$FIRST_IF" ]; then
+  die "No network interface found"
+fi
+PREDICTED=$(predict_network_interface_name "$FIRST_IF")
+log "Interface '$FIRST_IF' will be configured as: '$PREDICTED'"
+if [ -z "$PREDICTED" ]; then
+  die "predict_network_interface_name returned empty string for '$FIRST_IF'"
+fi
+
+# Generate the network configuration
 setup_etc_network_interfaces
+
+# Verify the file was created and has content
+if [ ! -s "/mnt/etc/network/interfaces" ]; then
+  die "Generated /etc/network/interfaces is empty!"
+fi
+
+log "Successfully generated /etc/network/interfaces ($(wc -l < /mnt/etc/network/interfaces) lines)"
 
 log "Cleaning up /mnt/hdd symlink"
 rm -f /mnt/hdd
