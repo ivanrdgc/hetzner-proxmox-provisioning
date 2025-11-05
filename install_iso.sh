@@ -106,7 +106,7 @@ source = "from-dhcp"
 [disk-setup]
 filesystem = "zfs"
 zfs.raid = "raid1"
-disk-list = ["sda", "sdb"]
+disk-list = ["vda", "vdb"]
 
 [first-boot]
 source = "from-url"
@@ -159,6 +159,7 @@ log "QEMU exited; assuming installation finished"
 ### --- STEP 6: mount ZFS root and generate Hetzner-style networking -
 
 log "Importing ZFS pool"
+echo y | zpool list || die "Failed to install zpool"
 zpool import -a || die "Failed to import any ZFS pools"
 
 ROOT_DS=$(zfs list -H -o name | awk '/\/ROOT\//{print $1; exit}')
