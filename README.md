@@ -1,14 +1,14 @@
 Execute this on a new server to prepare it for Proxmox:
 
 ```bash
-screen -d -m bash -c "curl -fsSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/install_zfs.sh | bash -s -- 1 AX162-R"
+screen -d -m bash -c "curl -fsSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/install_zfs.sh | bash -s -- 1 AX162-R; exec bash"
 screen -r
 ```
 
 This will automatically generate:
-- Hostname: `0000001-AX162-R`
-- Private IPv4: `10.64.0.2`
-- Private IPv6: `fd00:4000::2`
+- Hostname: `pve0000001-AX162-R`
+- Private IPv4: `10.64.0.1`
+- Private IPv6: `fd00:4000::1`
 
 The server ID can be any number between 1 and 1,048,574.
 
