@@ -1,9 +1,8 @@
 Execute this on a new server to prepare it for Proxmox:
 
 ```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/install_zfs.sh \
-  | bash -s -- 1 AX162-R
+screen -d -m bash -c "curl -fsSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/install_zfs.sh | bash -s -- 1 AX162-R"
+screen -r
 ```
 
 This will automatically generate:
