@@ -30,7 +30,7 @@ if [[ $SERVER_ID -lt 1 || $SERVER_ID -gt 1048574 ]]; then
 fi
 
 # Generate values from server ID and server type
-NAME="pve$(printf "%07d" "$SERVER_ID")-${SERVER_TYPE}"
+NAME="$(printf "%07d" "$SERVER_ID")-${SERVER_TYPE}"
 
 # Calculate IP octets for 10.64.0.0/12 network
 # The /12 network spans 10.64.0.0 to 10.79.255.255
@@ -57,7 +57,7 @@ AUTO_ISO_PATH="/root/proxmox-ve_${PVE_VERSION}-auto-from-iso.iso"
 ANSWER_FILE="/root/answer.toml"
 
 # Must be set before running, or edit here:
-: "${PVE_FQDN:=$SERVER_ID.neuravps.com}"
+: "${PVE_FQDN:=$NAME.neuravps.com}"
 : "${PVE_EMAIL:=soporte@neuravps.com}"
 : "${PVE_TIMEZONE:=Europe/Madrid}"
 
