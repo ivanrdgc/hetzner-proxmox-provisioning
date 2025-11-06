@@ -48,15 +48,9 @@ echo "Hostname: $NAME"
 echo "Private IPv4: $PRIVATE_IPV4"
 echo "Private IPv6: $PRIVATE_IPV6"
 
-# Base image
+# Hard-coded defaults
 IMAGE="/root/images/Debian-1300-trixie-amd64-base.tar.gz"
-
-# --- ZFS mirror partition scheme ---
-# EFI + swap + root pool (mirror)
-PARTSPEC="/boot/efi:esp:256M,/:zfs:rpool:mirror"
-
-# ZFS dataset creation options
-ZFS_OPTIONS="-O compression=zstd-3 -O atime=off -O relatime=off -O xattr=sa -O acltype=posixacl"
+PARTSPEC="/boot/efi:esp:256M,/:ext4:all"
 
 # Create a wrapper script that substitutes the IPs and runs chroot_config.sh
 cat > /root/chroot_wrapper.sh << EOF
@@ -69,29 +63,13 @@ curl -fsSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioni
 EOF
 chmod 0700 /root/chroot_wrapper.sh
 
-# --- Generate temporary installimage config ---
-CONFIG="/root/.installimage"
-cat > "\$CONFIG" <<EOF
-DRIVE1 /dev/nvme0n1
-DRIVE2 /dev/nvme1n1
-SWRAID 0
-FILESYSTEM zfs
-HOSTNAME $NAME
-
-PART /boot/efi esp 256M
-PART / zfs rpool mirror
-
-ZFS_OPTIONS="$ZFS_OPTIONS"
-EOF
-
-echo ">>> Installing Proxmox host: $NAME (ZFS mirror)..."
-sleep 2
-
+echo ">>> Installing Proxmox host: $NAME"
+# Call installimage
 /root/.oldroot/nfs/install/installimage \
-  -a -n "$NAME" \
+  -n "$NAME" \
   -r yes -l 1 \
   -i "$IMAGE" \
-  -g -p "$PARTSPEC" \
+  -g -p "$PARTSPEC" -a \
   -x /root/chroot_wrapper.sh \
   </dev/null
 
