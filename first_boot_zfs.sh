@@ -27,8 +27,29 @@ Components: no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
 
+# Replace Debian APT sources with Hetzner mirrors
+log "Replacing Debian APT sources with Hetzner mirrors"
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+  sed -i 's|http://deb.debian.org/debian/|https://mirror.hetzner.com/debian/packages|g' /etc/apt/sources.list.d/debian.sources
+  sed -i 's|http://security.debian.org/debian-security/|https://mirror.hetzner.com/debian/security|g' /etc/apt/sources.list.d/debian.sources
+fi
+
 apt-get update && apt-get full-upgrade -y
 #apt-get purge -y proxmox-first-boot
+
+# Configure chrony with Hetzner NTP servers
+log "Configuring chrony with Hetzner NTP servers"
+if [ -f /etc/chrony/chrony.conf ]; then
+  # Comment out the Debian pool line
+  sed -i 's/^pool 2.debian.pool.ntp.org iburst/#pool 2.debian.pool.ntp.org iburst/' /etc/chrony/chrony.conf
+  # Add Hetzner NTP servers at the end
+  cat >> /etc/chrony/chrony.conf <<EOF
+server  ntp1.hetzner.de  iburst
+server  ntp2.hetzner.com iburst
+server  ntp3.hetzner.net iburst
+EOF
+  systemctl restart chronyd || true
+fi
 
 
 ############################################
