@@ -82,15 +82,17 @@ cat >/etc/systemd/system/pve-pre-reboot-suspend.service <<EOF
 [Unit]
 Description=Suspend all running Proxmox VMs to disk before reboot/shutdown
 DefaultDependencies=no
-Before=shutdown.target reboot.target halt.target
+Before=final.target
+Conflicts=shutdown.target
 Requires=pvedaemon.service
-After=pvedaemon.service
+After=pvedaemon.service network.target
 
 [Service]
 Type=oneshot
 ExecStart=/var/lib/svz/snippets/pve-pre-reboot-suspend.sh
 TimeoutStartSec=0
 RemainAfterExit=yes
+KillMode=none
 
 [Install]
 WantedBy=halt.target reboot.target shutdown.target
