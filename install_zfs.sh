@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+#set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
   echo "Usage: $0 <server-id> <server_type>" >&2
@@ -66,7 +66,8 @@ NETWORK_FUNCS="/root/.oldroot/nfs/install/network_config.functions.sh"
 ### --- UTILS --------------------------------------------------------
 
 log() { echo "[$(date +'%F %T')] $*"; }
-die() { echo "ERROR: $*" >&2; exit 1; }
+#die() { echo "ERROR: $*" >&2; exit 1; }
+die() { echo "ERROR: $*" >&2; }
 
 require_cmd() {
   for c in "$@"; do
