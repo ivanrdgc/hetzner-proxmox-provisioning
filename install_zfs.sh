@@ -13,6 +13,8 @@ ANSWER_FILE="/root/answer.toml"
 : "${PVE_FQDN:=pve001.neuravps.com}"
 : "${PVE_EMAIL:=soporte@neuravps.com}"
 : "${PVE_TIMEZONE:=Europe/Madrid}"
+: "${PRIVATE_IPV4:=10.64.0.1}"
+: "${PRIVATE_IPV6:=fd00:4000::1}"
 
 NETWORK_FUNCS="/root/.oldroot/nfs/install/network_config.functions.sh"
 
@@ -111,7 +113,7 @@ disk-list = ["vda", "vdb"]
 [first-boot]
 source = "from-url"
 ordering = "fully-up"
-url = "https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/first_boot_iso.sh"
+url = "https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/first_boot_zfs.sh"
 EOF
 
 log "Validating answer file"
@@ -169,7 +171,6 @@ log "Using root dataset: $ROOT_DS"
 
 log "Temporarily setting mountpoint=/mnt and mounting root dataset"
 zfs set mountpoint=/mnt "$ROOT_DS"
-zfs mount "$ROOT_DS"
 
 # Prepare layout expected by network_config.functions.sh: $FOLD/hdd/...
 export FOLD="/mnt"
@@ -232,7 +233,13 @@ installed_os_systemd_version() { echo "0"; }
 systemd_nspawn_wo_debug() { return 1; }
 
 # Source the network functions
-source "$NETWORK_FUNCS"
+log "Sourcing network functions from $NETWORK_FUNCS"
+source "$NETWORK_FUNCS" || die "Failed to source network functions from $NETWORK_FUNCS"
+
+# Verify required functions are available after sourcing
+if ! declare -f physical_network_interfaces >/dev/null 2>&1; then
+  die "physical_network_interfaces function not found after sourcing $NETWORK_FUNCS"
+fi
 
 # Override predict_network_interface_name to use udevadm directly (like predict-check)
 # The original function tries to use systemd_nspawn which doesn't work in our context
@@ -297,7 +304,142 @@ if [ ! -s "/mnt/etc/network/interfaces" ]; then
   die "Generated /etc/network/interfaces is empty!"
 fi
 
+log "Configuring VLAN 4000 + vmbr0 (IPv4 NAT + IPv6)"
+
+# Grab first global IPv6 on that interface (e.g. 2a01:4f9:3071:1529::2/64)
+WAN_V6_INFO=$(ip -6 addr show dev "$FIRST_IF" scope global | awk '/inet6/{print $2; exit}')
+WAN_V6_ADDR=$(echo "$WAN_V6_INFO" | cut -d'/' -f1)       # 2a01:4f9:3071:1529::2
+WAN_V6_PREFIXLEN=$(echo "$WAN_V6_INFO" | cut -d'/' -f2)  # 64
+# Extract the routed /64 prefix (drop the host bits after the last "::")
+WAN_V6_PREFIX=$(echo "$WAN_V6_ADDR" | sed -E 's/::[0-9a-fA-F]*$//')  # -> 2a01:4f9:3071:1529
+
+# We are doing "Option B": guests live in the SAME /64 as the host uplink.
+VM_V6_SUBNET="${WAN_V6_PREFIX}"           # e.g. 2a01:4f9:3071:1529
+VM_V6_PREFIXLEN="${WAN_V6_PREFIXLEN}"     # almost certainly 64 from Hetzner
+VM_V6_GATEWAY="${VM_V6_SUBNET}::1"        # we give vmbr0 ::1 in that /64
+
+log "Detected uplink IPv6:       ${WAN_V6_ADDR}/${WAN_V6_PREFIXLEN}"
+log "Using guest prefix:         ${VM_V6_SUBNET}::/${VM_V6_PREFIXLEN}"
+log "vmbr0 gateway IPv6 will be: ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}"
+
+if ! grep -q "auto eth0.4000" /mnt/etc/network/interfaces; then
+cat >> /mnt/etc/network/interfaces <<EOF
+
+auto eth0.4000
+iface eth0.4000 inet static
+    address ${PRIVATE_IPV4}
+    netmask 255.240.0.0
+    vlan-raw-device ${PREDICTED}
+    mtu 1400
+
+iface eth0.4000 inet6 static
+    address ${PRIVATE_IPV6}
+    netmask 108
+EOF
+fi
+
+if ! grep -q "auto vmbr0" /mnt/etc/network/interfaces; then
+sed -i -e "/^iface ${PREDICTED} inet6 static$/,/^$/{
+    s/^\([[:space:]]*netmask[[:space:]]\)64$/\1128/
+}" /mnt/etc/network/interfaces
+cat >> /mnt/etc/network/interfaces <<EOF
+
+auto vmbr0
+iface vmbr0 inet static
+    address 10.0.0.1/16
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
+    post-up   iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o ${PREDICTED} -j MASQUERADE
+    post-up   iptables -t raw -I PREROUTING -i fwbr+ -j CT --zone 1
+    post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${PREDICTED} -j MASQUERADE
+    post-down iptables -t raw -D PREROUTING -i fwbr+ -j CT --zone 1
+
+iface vmbr0 inet6 static
+    address ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}
+    post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+EOF
+fi
+
 log "Successfully generated /etc/network/interfaces ($(wc -l < /mnt/etc/network/interfaces) lines)"
+
+# Configure DNS resolvers in /etc/resolv.conf
+# This is critical for hostname resolution (e.g., being able to ping google.com)
+log "Configuring DNS resolvers in /etc/resolv.conf"
+generate_resolvconf() {
+  # For Debian/Ubuntu, check if resolv.conf is a symlink (systemd-resolved)
+  local resolv_conf="/mnt/etc/resolv.conf"
+  local resolv_file="$resolv_conf"
+  
+  # Check if systemd-resolved is managing DNS (symlink to stub-resolv.conf)
+  if [[ -L "$resolv_conf" ]]; then
+    local link_target="$(readlink "$resolv_conf")"
+    log "Detected /etc/resolv.conf is a symlink to: $link_target"
+    
+    # If it points to systemd-resolved stub, we need to configure systemd-resolved
+    if [[ "$link_target" == *"systemd/resolve/stub-resolv.conf"* ]]; then
+      log "systemd-resolved detected, configuring /etc/systemd/resolved.conf"
+      local resolved_conf="/mnt/etc/systemd/resolved.conf"
+      
+      # Backup original if exists
+      if [ -f "$resolved_conf" ]; then
+        cp "$resolved_conf" "${resolved_conf}.bak"
+      fi
+      
+      # Configure systemd-resolved with Hetzner DNS servers
+      {
+        echo "[Resolve]"
+        echo "DNS=$(IFS=' '; echo "${DNSRESOLVER[*]}")"
+        echo "FallbackDNS=$(IFS=' '; echo "${DNSRESOLVER_V6[*]}")"
+        echo "Domains=~."
+      } > "$resolved_conf"
+      
+      log "systemd-resolved configured with DNS servers"
+    else
+      # If it's a symlink to something else, write to resolvconf base file
+      resolv_file="/mnt/etc/resolvconf/resolv.conf.d/base"
+      mkdir -p "$(dirname "$resolv_file")"
+    fi
+  fi
+  
+  # Also write to the actual file if it's not a systemd-resolved symlink
+  if [[ "$resolv_file" == "$resolv_conf" ]] || [[ "$resolv_file" != *"systemd"* ]]; then
+    log "Writing DNS resolvers to $resolv_file"
+    {
+      echo "### ${COMPANY} installimage"
+      echo "# nameserver config"
+      # Use randomized_nsaddrs to get nameservers in random order
+      while read nsaddr; do
+        echo "nameserver ${nsaddr}"
+      done < <(randomized_nsaddrs)
+    } > "$resolv_file"
+    
+    log "DNS configuration:"
+    cat "$resolv_file" | while read line; do
+      log "  $line"
+    done
+  fi
+}
+
+generate_resolvconf
+
+# Verify DNS configuration
+if [ ! -s "/mnt/etc/resolv.conf" ] && [ ! -L "/mnt/etc/resolv.conf" ]; then
+  log "WARNING: /etc/resolv.conf not found or empty, but may be handled by systemd-resolved"
+fi
+
+# Also ensure /etc/hosts has basic entries (helps with localhost resolution)
+log "Verifying /etc/hosts configuration"
+if [ ! -f "/mnt/etc/hosts" ] || ! grep -q "127.0.0.1" "/mnt/etc/hosts"; then
+  log "Adding basic localhost entries to /etc/hosts"
+  {
+    echo "127.0.0.1 localhost"
+    echo "::1 localhost ip6-localhost ip6-loopback"
+    echo "ff02::1 ip6-allnodes"
+    echo "ff02::2 ip6-allrouters"
+  } >> "/mnt/etc/hosts"
+fi
 
 log "Cleaning up /mnt/hdd symlink"
 rm -f /mnt/hdd
