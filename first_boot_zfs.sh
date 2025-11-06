@@ -4,6 +4,10 @@ set -euo pipefail
 log() { echo "[$(date +'%F %T')] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Restrict SSH
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+systemctl restart sshd
+
 # Add Proxmox repositories and keys
 rm /etc/apt/sources.list.d/pve-enterprise.sources || true
 
