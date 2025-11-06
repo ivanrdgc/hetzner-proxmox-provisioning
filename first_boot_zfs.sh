@@ -77,6 +77,43 @@ EOF
 
 systemctl restart dnsmasq
 
+# Script to preserve VM status on reboot
+cat >/etc/systemd/system/pve-pre-reboot-suspend.service <<EOF
+[Unit]
+Description=Suspend all running Proxmox VMs to disk before reboot/shutdown
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+Requires=pvedaemon.service
+After=pvedaemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+TimeoutStartSec=0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=halt.target reboot.target shutdown.target
+EOF
+
+cat >/etc/systemd/system/pve-post-boot-resume.service <<EOF
+[Unit]
+Description=Restore previously suspended Proxmox VMs from disk
+After=network-online.target pve-guests.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/svz/snippets/pve-post-boot-resume.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable pve-pre-reboot-suspend.service
+systemctl enable pve-post-boot-resume.service
+
 # Proxmox firewall: datacenter baseline with IPv6 ipset gating
 echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
@@ -138,7 +175,15 @@ fi
 curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/sync-dnat.py \
     -o /var/lib/svz/snippets/sync-dnat.py
 
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/pve-pre-reboot-suspend.sh \
+    -o /var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/pve-post-boot-resume.sh \
+    -o /var/lib/svz/snippets/pve-post-boot-resume.sh
+
 chmod +x /var/lib/svz/snippets/sync-dnat.py
+chmod +x /var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+chmod +x /var/lib/svz/snippets/pve-post-boot-resume.sh
 
 # manually add with: qm set 100 --hookscript shared:snippets/sync-dnat.py
 reboot
