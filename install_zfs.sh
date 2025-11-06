@@ -30,7 +30,7 @@ if [[ $SERVER_ID -lt 1 || $SERVER_ID -gt 1048574 ]]; then
 fi
 
 # Generate values from server ID and server type
-NAME="$(printf "%07d" "$SERVER_ID")-${SERVER_TYPE}"
+NAME="pve$(printf "%07d" "$SERVER_ID")-${SERVER_TYPE}"
 
 # Calculate IP octets for 10.64.0.0/12 network
 # The /12 network spans 10.64.0.0 to 10.79.255.255
