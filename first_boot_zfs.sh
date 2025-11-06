@@ -24,7 +24,7 @@ Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
 
 apt-get update && apt-get full-upgrade -y
-apt-get purge -y proxmox-first-boot
+#apt-get purge -y proxmox-first-boot
 
 
 ############################################
