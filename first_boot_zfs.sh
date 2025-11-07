@@ -78,43 +78,30 @@ EOF
 systemctl restart dnsmasq
 
 # Script to preserve VM status on reboot
-cat >/etc/systemd/system/pve-pre-reboot-suspend.service <<EOF
+cat >/etc/systemd/system/pve-guests-hooks.service <<EOF
 [Unit]
-Description=Suspend all running Proxmox VMs to disk before reboot/shutdown
-DefaultDependencies=no
-Before=final.target
-Conflicts=shutdown.target
-Requires=pvedaemon.service
-After=pvedaemon.service network.target
+Description=Custom hooks to suspend/resume VMs around pve-guests lifecycle
+# Run AFTER guests have started
+After=pve-guests.service
+# Tie our lifetime to pve-guests
+PartOf=pve-guests.service
 
 [Service]
 Type=oneshot
-ExecStart=/var/lib/svz/snippets/pve-pre-reboot-suspend.sh
-TimeoutStartSec=0
 RemainAfterExit=yes
-KillMode=none
 
-[Install]
-WantedBy=halt.target reboot.target shutdown.target
-EOF
-
-cat >/etc/systemd/system/pve-post-boot-resume.service <<EOF
-[Unit]
-Description=Restore previously suspended Proxmox VMs from disk
-After=network-online.target pve-guests.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
+# --- resume hook ---
 ExecStart=/var/lib/svz/snippets/pve-post-boot-resume.sh
 
+# --- suspend hook ---
+ExecStop=/var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+
 [Install]
-WantedBy=multi-user.target
+WantedBy=pve-guests.service
 EOF
 
 systemctl daemon-reload
-systemctl enable pve-pre-reboot-suspend.service
-systemctl enable pve-post-boot-resume.service
+systemctl enable pve-guests-hooks.service
 
 # Proxmox firewall: datacenter baseline with IPv6 ipset gating
 echo "==> Configuring Proxmox firewall (datacenter baseline)"
