@@ -475,17 +475,80 @@ if [ ! -s "/mnt/etc/resolv.conf" ] && [ ! -L "/mnt/etc/resolv.conf" ]; then
   log "WARNING: /etc/resolv.conf not found or empty, but may be handled by systemd-resolved"
 fi
 
-# Also ensure /etc/hosts has basic entries (helps with localhost resolution)
-log "Verifying /etc/hosts configuration"
-if [ ! -f "/mnt/etc/hosts" ] || ! grep -q "127.0.0.1" "/mnt/etc/hosts"; then
-  log "Adding basic localhost entries to /etc/hosts"
-  {
-    echo "127.0.0.1 localhost"
-    echo "::1 localhost ip6-localhost ip6-loopback"
-    echo "ff02::1 ip6-allnodes"
-    echo "ff02::2 ip6-allrouters"
-  } >> "/mnt/etc/hosts"
+# Generate /etc/hosts in the same format as installimage
+log "Generating /etc/hosts (installimage-style)"
+
+# Get main IP addresses - try using network_config.functions.sh functions first,
+# fall back to manual extraction from the main interface if needed
+MAIN_IPV4=""
+MAIN_IPV6=""
+
+# Try to use v4_main_ip() and v6_main_ip() if available (from network_config.functions.sh)
+if declare -f v4_main_ip >/dev/null 2>&1; then
+  MAIN_IPV4="$(v4_main_ip 2>/dev/null || true)"
 fi
+if declare -f v6_main_ip >/dev/null 2>&1; then
+  MAIN_IPV6="$(v6_main_ip 2>/dev/null || true)"
+fi
+
+# Fallback: extract IPs directly from the main network interface
+if [[ -z "$MAIN_IPV4" ]] && [[ -n "$FIRST_IF" ]]; then
+  MAIN_IPV4_INFO=$(ip -4 addr show dev "$FIRST_IF" scope global | awk '/inet/{print $2; exit}')
+  if [[ -n "$MAIN_IPV4_INFO" ]]; then
+    MAIN_IPV4="$MAIN_IPV4_INFO"
+    log "Extracted IPv4 from interface $FIRST_IF: $MAIN_IPV4"
+  fi
+fi
+
+if [[ -z "$MAIN_IPV6" ]] && [[ -n "$FIRST_IF" ]]; then
+  MAIN_IPV6_INFO=$(ip -6 addr show dev "$FIRST_IF" scope global | awk '/inet6/{print $2; exit}')
+  if [[ -n "$MAIN_IPV6_INFO" ]]; then
+    MAIN_IPV6="$MAIN_IPV6_INFO"
+    log "Extracted IPv6 from interface $FIRST_IF: $MAIN_IPV6"
+  fi
+fi
+
+# Extract shortname from FQDN
+SHORTNAME="${PVE_FQDN%%.*}"
+FQDN_NAME="${PVE_FQDN}"
+
+# If FQDN equals shortname, set FQDN_NAME to empty (like installimage does)
+if [[ "${FQDN_NAME}" == "${SHORTNAME}" ]]; then
+  FQDN_NAME=""
+fi
+
+# Generate /etc/hosts file (same format as installimage's set_hostname function)
+HOSTSFILE="/mnt/etc/hosts"
+{
+  echo "### ${COMPANY} installimage"
+  echo "127.0.0.1 localhost.localdomain localhost"
+  if [[ -n "$MAIN_IPV4" ]]; then
+    # Strip CIDR suffix if present
+    IPV4_WITHOUT_SUFFIX="${MAIN_IPV4%%/*}"
+    if [[ -n "$FQDN_NAME" ]]; then
+      echo "$IPV4_WITHOUT_SUFFIX $FQDN_NAME $SHORTNAME"
+    else
+      echo "$IPV4_WITHOUT_SUFFIX $SHORTNAME"
+    fi
+  fi
+  echo "::1     ip6-localhost ip6-loopback"
+  echo "fe00::0 ip6-localnet"
+  echo "ff00::0 ip6-mcastprefix"
+  echo "ff02::1 ip6-allnodes"
+  echo "ff02::2 ip6-allrouters"
+  echo "ff02::3 ip6-allhosts"
+  if [[ -n "$MAIN_IPV6" ]]; then
+    # Strip CIDR suffix if present
+    IPV6_WITHOUT_SUFFIX="${MAIN_IPV6%%/*}"
+    if [[ -n "$FQDN_NAME" ]]; then
+      echo "$IPV6_WITHOUT_SUFFIX $FQDN_NAME $SHORTNAME"
+    else
+      echo "$IPV6_WITHOUT_SUFFIX $SHORTNAME"
+    fi
+  fi
+} > "$HOSTSFILE"
+
+log "Generated /etc/hosts with IPv4: ${MAIN_IPV4:-none}, IPv6: ${MAIN_IPV6:-none}, FQDN: ${FQDN_NAME:-$SHORTNAME}"
 
 log "Cleaning up /mnt/hdd symlink"
 rm -f /mnt/hdd
