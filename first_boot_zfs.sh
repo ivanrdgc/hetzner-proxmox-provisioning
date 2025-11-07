@@ -67,12 +67,12 @@ dhcp-rapid-commit
 # IPv4 DHCP pool for guests
 dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
 dhcp-option=3,10.0.0.1
-dhcp-option=6,1.1.1.1,8.8.8.8
+dhcp-option=6,185.12.64.1,185.12.64.2
 
 # IPv6 SLAAC + RA
 enable-ra
 dhcp-range=::100,::ffff,constructor:vmbr0,ra-stateless,ra-names,12h
-dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
+dhcp-option=option6:dns-server,[2a01:4ff:ff00::add:1],[2a01:4ff:ff00::add:2]
 EOF
 
 systemctl restart dnsmasq
