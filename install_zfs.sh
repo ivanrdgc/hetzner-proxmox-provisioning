@@ -208,7 +208,7 @@ log "QEMU exited; assuming installation finished"
 
 log "Importing ZFS pool"
 echo y | zpool list || die "Failed to install zpool"
-zpool import -a || die "Failed to import any ZFS pools"
+zpool import -a -f || die "Failed to import any ZFS pools"
 
 ROOT_DS=$(zfs list -H -o name | awk '/\/ROOT\//{print $1; exit}')
 [ -n "$ROOT_DS" ] || die "Could not detect root ZFS dataset (*/ROOT/*)"
