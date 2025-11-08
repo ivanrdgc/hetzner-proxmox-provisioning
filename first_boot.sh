@@ -106,6 +106,20 @@ systemctl enable pve-guests-hooks.service
 # Allow replacement of disks
 apt-get install -y pv
 
+# Extending Proxmox API to allow restoring VM disks from VMA backups
+mkdir -p /usr/share/perl5/PVE/API2/Custom
+
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/Restore.pm \
+    -o /usr/share/perl5/PVE/API2/Custom/Restore.pm
+
+# Register subdir if not yet registered
+grep -q Custom /usr/share/perl5/PVE/API2/Nodes.pm || \
+sed -i '/register_standard_subdirs.*openvz/a __PACKAGE__->register_standard_subdirs("custom" => "PVE::API2::Custom::Restore");' \
+    /usr/share/perl5/PVE/API2/Nodes.pm
+
+# Restart Proxmox API daemons
+systemctl restart pvedaemon pveproxy
+
 ############## CLUSTER SPECIFIC CONFIGURATION ##############
 # Proxmox firewall: datacenter baseline with IPv6 ipset gating
 echo "==> Configuring Proxmox firewall (datacenter baseline)"
@@ -174,9 +188,13 @@ curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisionin
 curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/pve-post-boot-resume.sh \
     -o /var/lib/svz/snippets/pve-post-boot-resume.sh
 
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/restore-vm-disk-from-vma.sh \
+    -o /var/lib/svz/snippets/restore-vm-disk-from-vma.sh
+
 chmod +x /var/lib/svz/snippets/sync-dnat.py
 chmod +x /var/lib/svz/snippets/pve-pre-reboot-suspend.sh
 chmod +x /var/lib/svz/snippets/pve-post-boot-resume.sh
+chmod +x /var/lib/svz/snippets/restore-vm-disk-from-vma.sh
 
 # manually add with: qm set 100 --hookscript shared:snippets/sync-dnat.py
 reboot
