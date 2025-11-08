@@ -177,6 +177,9 @@ curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisionin
 curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/restore-vm-disk-from-vma.sh \
     -o /var/lib/svz/snippets/restore-vm-disk-from-vma.sh
 
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/reset-vm-conntrack.py \
+    -o /var/lib/svz/snippets/reset-vm-conntrack.py
+
 curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/patch_proxmox_api.py \
     -o /var/lib/svz/snippets/patch_proxmox_api.py
 
@@ -184,6 +187,7 @@ chmod +x /var/lib/svz/snippets/sync-dnat.py
 chmod +x /var/lib/svz/snippets/pve-pre-reboot-suspend.sh
 chmod +x /var/lib/svz/snippets/pve-post-boot-resume.sh
 chmod +x /var/lib/svz/snippets/restore-vm-disk-from-vma.sh
+chmod +x /var/lib/svz/snippets/reset-vm-conntrack.py
 chmod +x /var/lib/svz/snippets/patch_proxmox_api.py
 
 /var/lib/svz/snippets/patch_proxmox_api.py || true
