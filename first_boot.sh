@@ -188,6 +188,7 @@ chmod +x /var/lib/svz/snippets/patch_proxmox_api.py
 
 /var/lib/svz/snippets/patch_proxmox_api.py || true
 systemctl restart pveproxy
+systemctl restart pvedaemon
 
 # manually add with: qm set 100 --hookscript shared:snippets/sync-dnat.py
 reboot
