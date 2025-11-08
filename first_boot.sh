@@ -1,101 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-############################################
-# 0. Inputs from chroot_config.sh
-############################################
-PRIVATE_IPV4="10.64.0.1"
-PRIVATE_IPV6="fd00:4000::1"
+log() { echo "[$(date +'%F %T')] $*"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
 
-############################################
-# 1. Base system / Proxmox install
-############################################
-echo "==> Installing base packages (Proxmox VE, tools)"
-echo "postfix postfix/main_mailer_type select Local only" | debconf-set-selections
-DEBIAN_FRONTEND=noninteractive apt-get -y install proxmox-ve postfix open-iscsi chrony --purge
-sed -i 's/^/#/' /etc/apt/sources.list.d/pve-enterprise.sources || true
-apt-get update -y && apt-get -y upgrade
+# Restrict SSH
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+systemctl restart sshd
 
-############################################
-# 2. Detect WAN interface + IPv6 info
-############################################
-WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if ($i=="dev"){print $(i+1); exit}}')
-if [[ -z "${WAN_IF:-}" ]]; then
-    echo "ERROR: Cannot detect WAN interface"
-    exit 1
-fi
-echo "WAN_IF=${WAN_IF}"
+# Add Proxmox repositories and keys
+rm /etc/apt/sources.list.d/pve-enterprise.sources || true
 
-# Grab first global IPv6 on that interface (e.g. 2a01:4f9:3071:1529::2/64)
-WAN_V6_INFO=$(ip -6 addr show dev "$WAN_IF" scope global | awk '/inet6/{print $2; exit}')
-WAN_V6_ADDR=$(echo "$WAN_V6_INFO" | cut -d'/' -f1)       # 2a01:4f9:3071:1529::2
-WAN_V6_PREFIXLEN=$(echo "$WAN_V6_INFO" | cut -d'/' -f2)  # 64
-# Extract the routed /64 prefix (drop the host bits after the last "::")
-WAN_V6_PREFIX=$(echo "$WAN_V6_ADDR" | sed -E 's/::[0-9a-fA-F]*$//')  # -> 2a01:4f9:3071:1529
-
-# We are doing "Option B": guests live in the SAME /64 as the host uplink.
-VM_V6_SUBNET="${WAN_V6_PREFIX}"           # e.g. 2a01:4f9:3071:1529
-VM_V6_PREFIXLEN="${WAN_V6_PREFIXLEN}"     # almost certainly 64 from Hetzner
-VM_V6_GATEWAY="${VM_V6_SUBNET}::1"        # we give vmbr0 ::1 in that /64
-
-echo "Detected uplink IPv6:       ${WAN_V6_ADDR}/${WAN_V6_PREFIXLEN}"
-echo "Using guest prefix:         ${VM_V6_SUBNET}::/${VM_V6_PREFIXLEN}"
-echo "vmbr0 gateway IPv6 will be: ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}"
-
-############################################
-# 3. Network interfaces
-############################################
-echo "==> Configuring VLAN 4000 + vmbr0 (IPv4 NAT + IPv6)"
-
-if ! grep -q "auto ${WAN_IF}.4000" /etc/network/interfaces; then
-cat >> /etc/network/interfaces <<EOF
-
-auto ${WAN_IF}.4000
-iface ${WAN_IF}.4000 inet static
-    address ${PRIVATE_IPV4}
-    netmask 255.240.0.0
-    vlan-raw-device ${WAN_IF}
-    mtu 1400
-
-iface ${WAN_IF}.4000 inet6 static
-    address ${PRIVATE_IPV6}
-    netmask 108
+cat > /etc/apt/sources.list.d/pve-no-subscription.sources << EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
-fi
 
-if ! grep -q "auto vmbr0" /etc/network/interfaces; then
-sed -i -e "/^iface ${WAN_IF} inet6 static$/,/^$/{
-    s/^\([[:space:]]*netmask[[:space:]]\)64$/\1128/
-}" /etc/network/interfaces
-cat >> /etc/network/interfaces <<EOF
-
-auto vmbr0
-iface vmbr0 inet static
-    address 10.0.0.1/16
-    bridge-ports none
-    bridge-stp off
-    bridge-fd 0
-    post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
-    post-up   iptables -t raw -I PREROUTING -i fwbr+ -j CT --zone 1
-    post-down iptables -t nat -D POSTROUTING -s '10.0.0.0/16' -o ${WAN_IF} -j MASQUERADE
-    post-down iptables -t raw -D PREROUTING -i fwbr+ -j CT --zone 1
-
-iface vmbr0 inet6 static
-    address ${VM_V6_GATEWAY}/${VM_V6_PREFIXLEN}
-    post-up   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+cat > /etc/apt/sources.list.d/ceph.sources << EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
+
+# Replace Debian APT sources with Hetzner mirrors
+log "Replacing Debian APT sources with Hetzner mirrors"
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+  sed -i 's|http://deb.debian.org/debian/|https://mirror.hetzner.com/debian/packages|g' /etc/apt/sources.list.d/debian.sources
+  sed -i 's|http://security.debian.org/debian-security/|https://mirror.hetzner.com/debian/security|g' /etc/apt/sources.list.d/debian.sources
 fi
 
-# Reload interfaces to apply config
-ifreload -a || true
-rm -f /etc/network/interfaces.new || true
-systemctl enable networking
+apt-get update && apt-get full-upgrade -y
+#apt-get purge -y proxmox-first-boot
+
+# Configure chrony with Hetzner NTP servers
+log "Configuring chrony with Hetzner NTP servers"
+if [ -f /etc/chrony/chrony.conf ]; then
+  # Comment out the Debian pool line
+  sed -i 's/^pool 2.debian.pool.ntp.org iburst/#pool 2.debian.pool.ntp.org iburst/' /etc/chrony/chrony.conf
+  # Add Hetzner NTP servers at the end
+  cat >> /etc/chrony/chrony.conf <<EOF
+server  ntp1.hetzner.de  iburst
+server  ntp2.hetzner.com iburst
+server  ntp3.hetzner.net iburst
+EOF
+  systemctl restart chronyd || true
+fi
+
 
 ############################################
-# 4. dnsmasq for IPv4 DHCP only
+# dnsmasq for IPv4 DHCP only
 ############################################
-echo "==> Installing and configuring dnsmasq"
+log "Installing and configuring dnsmasq"
 apt-get install -y dnsmasq
 
 cat > /etc/dnsmasq.d/vmbr0.conf <<EOF
@@ -107,17 +67,47 @@ dhcp-rapid-commit
 # IPv4 DHCP pool for guests
 dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
 dhcp-option=3,10.0.0.1
-dhcp-option=6,1.1.1.1,8.8.8.8
+dhcp-option=6,185.12.64.1,185.12.64.2
 
 # IPv6 SLAAC + RA
 enable-ra
 dhcp-range=::100,::ffff,constructor:vmbr0,ra-stateless,ra-names,12h
-dhcp-option=option6:dns-server,[2606:4700:4700::1111],[2001:4860:4860::8888]
+dhcp-option=option6:dns-server,[2a01:4ff:ff00::add:1],[2a01:4ff:ff00::add:2]
 EOF
 
 systemctl restart dnsmasq
 
-# ---- Proxmox firewall: datacenter baseline with IPv6 ipset gating ----
+# Script to preserve VM status on reboot
+cat >/etc/systemd/system/pve-guests-hooks.service <<EOF
+[Unit]
+Description=Custom hooks to suspend/resume VMs around pve-guests lifecycle
+# Run AFTER guests have started
+After=pve-guests.service
+# Tie our lifetime to pve-guests
+PartOf=pve-guests.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# --- resume hook ---
+ExecStart=/var/lib/svz/snippets/pve-post-boot-resume.sh
+
+# --- suspend hook ---
+ExecStop=/var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+
+[Install]
+WantedBy=pve-guests.service
+EOF
+
+systemctl daemon-reload
+systemctl enable pve-guests-hooks.service
+
+# Allow replacement of disks
+apt-get install -y pv
+
+############## CLUSTER SPECIFIC CONFIGURATION ##############
+# Proxmox firewall: datacenter baseline with IPv6 ipset gating
 echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
 [OPTIONS]
@@ -168,16 +158,25 @@ EOF
 pve-firewall restart || true
 
 # ---- Cluster-wide snippets storage + dynamic RDP hookscript ----
-echo "==> Installing cluster-wide hookscript for dynamic RDP DNAT + INPUT open/close"
+log "Installing cluster-wide hookscript for dynamic RDP DNAT + INPUT open/close"
 mkdir -p /var/lib/svz
 if ! pvesm status | awk '{print $1}' | grep -x shared; then
-  pvesm add dir shared --path /var/lib/svz --content snippets,backup --shared true || true
+  pvesm add dir shared --path /var/lib/svz --content snippets --shared true || true
 fi
 
 # Always overwrite to keep latest version
-curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/sync-dnat.py \
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/sync-dnat.py \
     -o /var/lib/svz/snippets/sync-dnat.py
 
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/pve-pre-reboot-suspend.sh \
+    -o /var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+
+curl -sSL https://raw.githubusercontent.com/NeuraVPS/hetzner-proxmox-provisioning/refs/heads/master/snippets/pve-post-boot-resume.sh \
+    -o /var/lib/svz/snippets/pve-post-boot-resume.sh
+
 chmod +x /var/lib/svz/snippets/sync-dnat.py
+chmod +x /var/lib/svz/snippets/pve-pre-reboot-suspend.sh
+chmod +x /var/lib/svz/snippets/pve-post-boot-resume.sh
 
 # manually add with: qm set 100 --hookscript shared:snippets/sync-dnat.py
+reboot
