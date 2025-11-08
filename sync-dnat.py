@@ -8,6 +8,7 @@ import sys
 import time
 import logging
 from pathlib import Path
+import os
 
 # Constants
 DNAT_PREFIX = "vmid-"
@@ -17,7 +18,7 @@ NODE_NAME = subprocess.getoutput("hostname")
 
 # Set up logging
 SCRIPT_DIR = Path(__file__).parent.resolve()
-LOG_FILE = SCRIPT_DIR / "sync-dnat.log"
+LOG_FILE = Path("/var/log/sync-dnat.log")
 MAX_LOG_SIZE = 1024 * 1024  # 1 MB
 
 def clean_log_if_needed():
@@ -50,6 +51,19 @@ if was_cleaned:
 # ---------------------------------------------------------------
 # Helper utils
 # ---------------------------------------------------------------
+def is_running_under_backup():
+    """Return True if this hook script is running during a vzdump/backup job."""
+    try:
+        ppid = os.getppid()
+        # Get parent process command
+        cmdline = open(f"/proc/{ppid}/cmdline").read().replace("\x00", " ")
+        # Get executable name
+        comm = open(f"/proc/{ppid}/comm").read().strip()
+        if any(word in cmdline for word in ("vzdump", "pve-zsync")) or "vzdump" in comm:
+            return True
+    except Exception:
+        pass
+    return False
 
 def run(cmd, check=True):
     result = subprocess.run(cmd, capture_output=True, text=True, check=check)
@@ -267,6 +281,10 @@ def main():
     # Handle arguments from Proxmox hook
     triggered_vmid = None
     phase = None
+
+    if is_running_under_backup():
+        #logger.info(f"Detected vzdump/backup context (parent process). Skipping execution for VM {triggered_vmid}.")
+        return
     
     if len(sys.argv) >= 3:
         triggered_vmid = int(sys.argv[1])
@@ -274,7 +292,7 @@ def main():
         
         # Exit immediately for anything other than post-stop and post-start
         if phase not in ["post-stop", "post-start"]:
-            logger.info(f"Phase {phase} - exiting immediately")
+            #logger.info(f"Phase {phase} - exiting immediately")
             return
         
         logger.info(f"Hook triggered: VM {triggered_vmid}, phase {phase}")

@@ -103,6 +103,10 @@ EOF
 systemctl daemon-reload
 systemctl enable pve-guests-hooks.service
 
+# Allow replacement of disks
+apt-get install -y pv
+
+############## CLUSTER SPECIFIC CONFIGURATION ##############
 # Proxmox firewall: datacenter baseline with IPv6 ipset gating
 echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
