@@ -61,27 +61,28 @@ else
 fi
 
 # --- temp dir & trap ---
-TMPDIR="$(mktemp -d /var/tmp/restore-${VMID}-XXXXXX)"
-echo "[INFO] Using temp dir: $TMPDIR"
+TMPROOT="$(mktemp -d /var/tmp/restore-${VMID}-XXXXXX)"
+EXTRACT_DIR="${TMPROOT}/vma"
+echo "[INFO] Using temp dir: $TMPROOT"
 
 cleanup() {
-  echo "[INFO] Cleaning up $TMPDIR"
-  rm -rf "$TMPDIR"
+  echo "[INFO] Cleaning up $TMPROOT"
+  rm -rf "$TMPROOT"
 }
 trap cleanup EXIT
 
 # --- extract VMA ---
 echo "[INFO] Extracting VMA: $BACKUP"
-vma extract "$BACKUP" "$TMPDIR"
+vma extract "$BACKUP" "$EXTRACT_DIR"
 
-RAW_DISK="${TMPDIR}/disk-drive-scsi0.raw"
+RAW_DISK="${EXTRACT_DIR}/disk-drive-scsi0.raw"
 if [[ ! -f "$RAW_DISK" ]]; then
   # Fallback: first *.raw file
-  RAW_DISK="$(ls "$TMPDIR"/*.raw 2>/dev/null | head -n1 || true)"
+  RAW_DISK="$(ls "$EXTRACT_DIR"/*.raw 2>/dev/null | head -n1 || true)"
 fi
 
 if [[ -z "$RAW_DISK" || ! -f "$RAW_DISK" ]]; then
-  echo "[ERROR] Could not find extracted .raw disk in $TMPDIR" >&2
+  echo "[ERROR] Could not find extracted .raw disk in $EXTRACT_DIR" >&2
   exit 1
 fi
 
