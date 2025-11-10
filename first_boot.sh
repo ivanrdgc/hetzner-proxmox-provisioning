@@ -88,7 +88,9 @@ PartOf=pve-guests.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=60min
 RemainAfterExit=yes
+TimeoutStopSec=60min
 
 # --- resume hook ---
 ExecStart=/var/lib/svz/snippets/pve-post-boot-resume.sh
