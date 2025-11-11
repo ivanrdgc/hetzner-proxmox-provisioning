@@ -19,8 +19,9 @@ The server ID can be any number between 1 and 1,048,574.
 - Disable Password lock Policy
 - Apply Java patch for SQX
 - Install desired software
-- From Linux, remove recovery partition
+- NTP servers for Hetzner
 - Sysprep with unattend.xml
+- From Linux, remove recovery partition
 
 ## Java Issue with sqx
 ```powershell
