@@ -20,6 +20,7 @@ The server ID can be any number between 1 and 1,048,574.
 - Apply Java patch for SQX
 - Install desired software
 - NTP servers for Hetzner
+- Disk cleanup
 - Sysprep with unattend.xml
 - From Linux, remove recovery partition
 
