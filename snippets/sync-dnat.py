@@ -169,7 +169,7 @@ def parse_iptables_rules():
         if line.startswith("*"):
             current_table = line[1:]
         elif line.startswith("-A") and current_table in rules:
-            if "ssh-vmid-" in line or "rdp-vmid-" in line:
+            if "ssh-vmid-" in line or "rdp-vmid-" in line or "samba-vmid-" in line:
                 rules[current_table].add(normalize_rule(line))
     return rules
 
@@ -177,10 +177,12 @@ def build_expected_rules(vm_infos, wan_if):
     expected_nat = set()
     expected_filter = set()
     for vmid, info in vm_infos.items():
+        vm_ip = info["ip"]
+        
+        # SSH/RDP rule (20000+vmid -> 22/3389)
         to_port = 3389 if info["ostype"].startswith("win") else 22
         comment = f"{'rdp' if to_port == 3389 else 'ssh'}-vmid-{vmid}"
         host_port = BASE_PORT + vmid
-        vm_ip = info["ip"]
 
         nat_rule = normalize_rule(
             f"-A PREROUTING -i {wan_if} -p tcp --dport {host_port} "
@@ -192,6 +194,21 @@ def build_expected_rules(vm_infos, wan_if):
         )
         expected_nat.add(nat_rule)
         expected_filter.add(fwd_rule)
+        
+        # Samba rule (10+vmid -> 445) - only for Windows VMs
+        if info["ostype"].startswith("win"):
+            samba_comment = f"samba-vmid-{vmid}"
+            samba_host_port = 10 + vmid
+            samba_nat_rule = normalize_rule(
+                f"-A PREROUTING -i {wan_if} -p tcp --dport {samba_host_port} "
+                f"-m comment --comment {samba_comment} -j DNAT --to-destination {vm_ip}:445"
+            )
+            samba_fwd_rule = normalize_rule(
+                f"-A FORWARD -d {vm_ip} -p tcp --dport 445 "
+                f"-m comment --comment {samba_comment} -j ACCEPT"
+            )
+            expected_nat.add(samba_nat_rule)
+            expected_filter.add(samba_fwd_rule)
     return expected_nat, expected_filter
 
 def delete_rule_by_comment(comment, table):
@@ -263,7 +280,7 @@ def cleanup_stale_fw_rules(active_vmids):
     rules = get_existing_fw_rules()
     for rule in rules:
         comment = rule.get("comment", "")
-        m = re.match(r"(ssh|rdp)-vmid-(\d+)", comment)
+        m = re.match(r"(ssh|rdp|samba)-vmid-(\d+)", comment)
         if m:
             vmid = int(m.group(2))
             if vmid not in active_vmids:
@@ -342,10 +359,18 @@ def main():
     # Sync firewall
     rules_modified = False
     for vmid, info in vm_infos.items():
+        # SSH/RDP firewall rule
         port = BASE_PORT + vmid
         comment = f"{'rdp' if info['ostype'].startswith('win') else 'ssh'}-vmid-{vmid}"
         add_fw_accept_rule(port, comment, wan_if)
         rules_modified = True
+        
+        # Samba firewall rule - only for Windows VMs
+        if info['ostype'].startswith('win'):
+            samba_port = 10 + vmid
+            samba_comment = f"samba-vmid-{vmid}"
+            add_fw_accept_rule(samba_port, samba_comment, wan_if)
+            rules_modified = True
 
     if cleanup_stale_fw_rules(vm_infos.keys()):
         rules_modified = True
