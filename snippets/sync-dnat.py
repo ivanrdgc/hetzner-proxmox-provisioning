@@ -13,7 +13,8 @@ import os
 # Constants
 DNAT_PREFIX = "vmid-"
 BRIDGE_NET = "10.0.0.0/16"
-BASE_PORT = 20000
+BASE_PORT_RDP = 20000
+BASE_PORT_SAMBA = 10000
 NODE_NAME = subprocess.getoutput("hostname")
 
 # Set up logging
@@ -182,7 +183,7 @@ def build_expected_rules(vm_infos, wan_if):
         # SSH/RDP rule (20000+vmid -> 22/3389)
         to_port = 3389 if info["ostype"].startswith("win") else 22
         comment = f"{'rdp' if to_port == 3389 else 'ssh'}-vmid-{vmid}"
-        host_port = BASE_PORT + vmid
+        host_port = BASE_PORT_RDP + vmid
 
         nat_rule = normalize_rule(
             f"-A PREROUTING -i {wan_if} -p tcp --dport {host_port} "
@@ -195,10 +196,10 @@ def build_expected_rules(vm_infos, wan_if):
         expected_nat.add(nat_rule)
         expected_filter.add(fwd_rule)
         
-        # Samba rule (10+vmid -> 445) - only for Windows VMs
+        # Samba rule (1000+vmid -> 445) - only for Windows VMs
         if info["ostype"].startswith("win"):
             samba_comment = f"samba-vmid-{vmid}"
-            samba_host_port = 10 + vmid
+            samba_host_port = BASE_PORT_SAMBA + vmid
             samba_nat_rule = normalize_rule(
                 f"-A PREROUTING -i {wan_if} -p tcp --dport {samba_host_port} "
                 f"-m comment --comment {samba_comment} -j DNAT --to-destination {vm_ip}:445"
@@ -360,14 +361,14 @@ def main():
     rules_modified = False
     for vmid, info in vm_infos.items():
         # SSH/RDP firewall rule
-        port = BASE_PORT + vmid
+        port = BASE_PORT_RDP + vmid
         comment = f"{'rdp' if info['ostype'].startswith('win') else 'ssh'}-vmid-{vmid}"
         add_fw_accept_rule(port, comment, wan_if)
         rules_modified = True
         
         # Samba firewall rule - only for Windows VMs
         if info['ostype'].startswith('win'):
-            samba_port = 10 + vmid
+            samba_port = BASE_PORT_SAMBA + vmid
             samba_comment = f"samba-vmid-{vmid}"
             add_fw_accept_rule(samba_port, samba_comment, wan_if)
             rules_modified = True
