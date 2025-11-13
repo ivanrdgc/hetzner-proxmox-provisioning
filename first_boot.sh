@@ -114,10 +114,10 @@ echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
 [OPTIONS]
 
-policy_out: ACCEPT
 enable: 1
 policy_forward: DROP
 policy_in: DROP
+policy_out: ACCEPT
 
 [ALIASES]
 
@@ -150,6 +150,14 @@ IN SSH(ACCEPT) -log nolog
 IN RDP(ACCEPT) -dest 0.0.0.0/0 -log nolog
 IN DROP -log nolog
 OUT DROP -log nolog
+
+[group vm-no-rdp]
+
+IN SMB(DROP) -log nolog
+
+[group vm-no-samba]
+
+IN RDP(DROP) -log nolog
 
 [group vm-public-ipv6]
 
