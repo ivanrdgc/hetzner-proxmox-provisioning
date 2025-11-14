@@ -114,9 +114,9 @@ echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
 [OPTIONS]
 
-enable: 1
-policy_forward: DROP
 policy_in: DROP
+policy_forward: DROP
+enable: 1
 policy_out: ACCEPT
 
 [ALIASES]
@@ -132,7 +132,7 @@ fd00:4000::/108
 
 GROUP management
 IN ACCEPT -source +dc/hetzner-internal -log nolog
-IN ACCEPT -i vmbr0 -log nolog
+IN DHCPfwd(ACCEPT) -i vmbr0 -log nolog
 
 [group management]
 
@@ -141,14 +141,14 @@ IN SSH(ACCEPT) -log nolog
 
 [group vm-default]
 
-IN DHCPfwd(ACCEPT) -log nolog
-IN ACCEPT -source dc/nat-gateway -log nolog
-IN RDP(ACCEPT) -log nolog
-IN SMB(ACCEPT) -log nolog
+IN SSH(ACCEPT) -dest 0.0.0.0/0 -log nolog
+IN RDP(ACCEPT) -dest 0.0.0.0/0 -log nolog
+IN SMB(ACCEPT) -dest 0.0.0.0/0 -log nolog
 
 [group vm-no-internet]
 
-IN SSH(ACCEPT) -log nolog
+IN SMB(ACCEPT) -dest 0.0.0.0/0 -log nolog
+IN SSH(ACCEPT) -dest 0.0.0.0/0 -log nolog
 IN RDP(ACCEPT) -dest 0.0.0.0/0 -log nolog
 IN DROP -log nolog
 OUT DROP -log nolog
@@ -160,6 +160,10 @@ IN RDP(DROP) -log nolog
 [group vm-no-samba]
 
 IN SMB(DROP) -log nolog
+
+[group vm-no-ssh]
+
+IN SSH(DROP) -log nolog
 
 [group vm-public-ipv6]
 
