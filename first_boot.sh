@@ -65,13 +65,14 @@ dhcp-authoritative
 dhcp-rapid-commit
 
 # IPv4 DHCP pool for guests
-dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,12h
+dhcp-range=10.0.0.100,10.0.255.254,255.255.0.0,720h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,185.12.64.1,185.12.64.2
 
-# IPv6 SLAAC + RA
+# ==== IPv6 DHCPv6 (stateful only; SLAAC disabled) ====
 enable-ra
-dhcp-range=::100,::ffff,constructor:vmbr0,ra-stateless,ra-names,12h
+dhcp-range=::100,::1ff,constructor:vmbr0,ra-stateless,720h
+ra-param=constructor:vmbr0,0,0
 dhcp-option=option6:dns-server,[2a01:4ff:ff00::add:1],[2a01:4ff:ff00::add:2]
 EOF
 
@@ -114,10 +115,10 @@ echo "==> Configuring Proxmox firewall (datacenter baseline)"
 cat >/etc/pve/firewall/cluster.fw <<'EOF'
 [OPTIONS]
 
-policy_in: DROP
-policy_forward: DROP
-enable: 1
 policy_out: ACCEPT
+policy_in: DROP
+enable: 1
+policy_forward: DROP
 
 [ALIASES]
 
@@ -128,11 +129,17 @@ NAT-Gateway 10.0.0.1
 10.64.0.0/12
 fd00:4000::/108
 
+[IPSET hosts-ipv6]
+
+2a01:4f9:3071:17a7::/64
+2a01:4f9:6a:44eb::/64
+
 [RULES]
 
 GROUP management
 IN ACCEPT -source +dc/hetzner-internal -log nolog
 IN DHCPfwd(ACCEPT) -i vmbr0 -log nolog
+IN DHCPv6(ACCEPT) -i vmbr0 -log nolog
 
 [group management]
 
@@ -144,6 +151,7 @@ IN SSH(ACCEPT) -log nolog
 IN SSH(ACCEPT) -dest 0.0.0.0/0 -log nolog
 IN RDP(ACCEPT) -dest 0.0.0.0/0 -log nolog
 IN SMB(ACCEPT) -dest 0.0.0.0/0 -log nolog
+IN SMB(ACCEPT) -source +dc/hosts-ipv6 -dest +dc/hosts-ipv6 -log nolog
 
 [group vm-no-internet]
 
@@ -159,6 +167,7 @@ IN RDP(DROP) -log nolog
 
 [group vm-no-samba]
 
+IN SMB(ACCEPT) -source +dc/hosts-ipv6 -dest +dc/hosts-ipv6 -log nolog
 IN SMB(DROP) -log nolog
 
 [group vm-no-ssh]
