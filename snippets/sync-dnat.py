@@ -11,14 +11,12 @@ from pathlib import Path
 import os
 
 # Constants
-DNAT_PREFIX = "vmid-"
 BRIDGE_NET = "10.0.0.0/16"
 BASE_PORT_RDP = 20000
 BASE_PORT_SAMBA = 10000
 NODE_NAME = subprocess.getoutput("hostname")
 
 # Set up logging
-SCRIPT_DIR = Path(__file__).parent.resolve()
 LOG_FILE = Path("/var/log/sync-dnat.log")
 MAX_LOG_SIZE = 1024 * 1024  # 1 MB
 
@@ -175,8 +173,20 @@ def parse_iptables_rules():
     return rules
 
 def build_expected_rules(vm_infos, wan_if):
+    """Build expected iptables rules.
+    
+    Args:
+        vm_infos: Dict mapping vmid to VM info (ip, ostype)
+        wan_if: WAN interface name
+    
+    Returns:
+        Tuple of (expected_nat, expected_filter) where:
+        - expected_nat: set of normalized NAT rule strings
+        - expected_filter: empty dict (no FORWARD rules needed - group rules handle it)
+    """
     expected_nat = set()
-    expected_filter = set()
+    expected_filter = {}  # Empty - Proxmox firewall group rules handle FORWARD filtering
+    
     for vmid, info in vm_infos.items():
         vm_ip = info["ip"]
         
@@ -189,14 +199,9 @@ def build_expected_rules(vm_infos, wan_if):
             f"-A PREROUTING -i {wan_if} -p tcp --dport {host_port} "
             f"-m comment --comment {comment} -j DNAT --to-destination {vm_ip}:{to_port}"
         )
-        fwd_rule = normalize_rule(
-            f"-A FORWARD -d {vm_ip} -p tcp --dport {to_port} "
-            f"-m comment --comment {comment} -j ACCEPT"
-        )
         expected_nat.add(nat_rule)
-        expected_filter.add(fwd_rule)
         
-        # Samba rule (1000+vmid -> 445) - only for Windows VMs
+        # Samba rule (10000+vmid -> 445) - only for Windows VMs
         if info["ostype"].startswith("win"):
             samba_comment = f"samba-vmid-{vmid}"
             samba_host_port = BASE_PORT_SAMBA + vmid
@@ -204,12 +209,8 @@ def build_expected_rules(vm_infos, wan_if):
                 f"-A PREROUTING -i {wan_if} -p tcp --dport {samba_host_port} "
                 f"-m comment --comment {samba_comment} -j DNAT --to-destination {vm_ip}:445"
             )
-            samba_fwd_rule = normalize_rule(
-                f"-A FORWARD -d {vm_ip} -p tcp --dport 445 "
-                f"-m comment --comment {samba_comment} -j ACCEPT"
-            )
             expected_nat.add(samba_nat_rule)
-            expected_filter.add(samba_fwd_rule)
+    
     return expected_nat, expected_filter
 
 def delete_rule_by_comment(comment, table):
@@ -224,72 +225,41 @@ def delete_rule_by_comment(comment, table):
             subprocess.run(["iptables", "-t", table] + args, check=False)
 
 def sync_iptables_rules(expected, actual, table):
-    """Sync iptables rules, adds missing ones, deletes obsolete ones."""
-    to_add = expected - actual
-    to_del = actual - expected
+    """Sync iptables rules, adds missing ones, deletes obsolete ones.
+    
+    Args:
+        expected: For NAT table, a set of normalized rule strings.
+                 For FILTER table, an empty dict (no FORWARD rules needed).
+        actual: Set of normalized rule strings for the table
+        table: Table name ('nat' or 'filter')
+    """
+    if table == "filter" and isinstance(expected, dict):
+        # FORWARD rules: expected is always empty (group rules handle it)
+        # Delete any old FORWARD rules that shouldn't exist
+        if actual:
+            logger.info(f"Cleaning up {len(actual)} old FORWARD rules (no longer needed)")
+            for rule in sorted(actual):
+                m = re.search(r"--comment\s+(\S+)", rule)
+                if m:
+                    comment = m.group(1)
+                    delete_rule_by_comment(comment, table)
+    else:
+        # NAT rules
+        expected_set = expected if isinstance(expected, set) else set(expected.keys())
+        to_add = expected_set - actual
+        to_del = actual - expected_set
 
-    # delete obsolete rules by comment
-    for rule in sorted(to_del):
-        m = re.search(r"--comment\s+(\S+)", rule)
-        if m:
-            comment = m.group(1)
-            delete_rule_by_comment(comment, table)
+        # delete obsolete rules by comment
+        for rule in sorted(to_del):
+            m = re.search(r"--comment\s+(\S+)", rule)
+            if m:
+                comment = m.group(1)
+                delete_rule_by_comment(comment, table)
 
-    # add missing rules
-    for rule in sorted(to_add):
-        logger.info(f"ADD: {rule}")
-        subprocess.run(["iptables", "-t", table] + shlex.split(rule), check=True)
-
-# ---------------------------------------------------------------
-# Proxmox Firewall API
-# ---------------------------------------------------------------
-
-def get_existing_fw_rules():
-    try:
-        out = run(["pvesh", "get", f"/nodes/{NODE_NAME}/firewall/rules", "--output-format", "json"])
-        return json.loads(out)
-    except Exception as e:
-        logger.warning(f"Could not get firewall rules: {e}")
-        return []
-
-def add_fw_accept_rule(port, comment, iface):
-    rules = get_existing_fw_rules()
-    for rule in rules:
-        if (
-            rule.get("comment") == comment and
-            rule.get("dport") == str(port) and
-            rule.get("iface") == iface and
-            rule.get("action") == "ACCEPT"
-        ):
-            return  # exists
-
-    logger.info(f"FW ACCEPT port {port} ({comment})")
-    subprocess.run([
-        "pvesh", "create", f"/nodes/{NODE_NAME}/firewall/rules",
-        "--type", "in",
-        "--action", "ACCEPT",
-        "--iface", iface,
-        "--proto", "tcp",
-        "--dport", str(port),
-        "--comment", comment,
-        "--pos", "0",
-        "--enable", "1"
-    ], check=True)
-
-def cleanup_stale_fw_rules(active_vmids):
-    rules_deleted = False
-    rules = get_existing_fw_rules()
-    for rule in rules:
-        comment = rule.get("comment", "")
-        m = re.match(r"(ssh|rdp|samba)-vmid-(\d+)", comment)
-        if m:
-            vmid = int(m.group(2))
-            if vmid not in active_vmids:
-                pos = rule["pos"]
-                logger.info(f"FW DEL rule {comment} (pos {pos})")
-                subprocess.run(["pvesh", "delete", f"/nodes/{NODE_NAME}/firewall/rules/{pos}"], check=True)
-                rules_deleted = True
-    return rules_deleted
+        # add missing rules
+        for rule in sorted(to_add):
+            logger.info(f"ADD: {rule}")
+            subprocess.run(["iptables", "-t", table] + shlex.split(rule), check=True)
 
 # ---------------------------------------------------------------
 # Main logic
@@ -350,36 +320,13 @@ def main():
                 else:
                     raise
 
+    # Build expected rules (only NAT rules - group rules handle FORWARD filtering)
     expected_nat, expected_filter = build_expected_rules(vm_infos, wan_if)
     actual = parse_iptables_rules()
 
-    # Sync iptables (only our rules)
+    # Sync iptables rules
     sync_iptables_rules(expected_nat, actual["nat"], "nat")
     sync_iptables_rules(expected_filter, actual["filter"], "filter")
-
-    # Sync firewall
-    rules_modified = False
-    for vmid, info in vm_infos.items():
-        # SSH/RDP firewall rule
-        port = BASE_PORT_RDP + vmid
-        comment = f"{'rdp' if info['ostype'].startswith('win') else 'ssh'}-vmid-{vmid}"
-        add_fw_accept_rule(port, comment, wan_if)
-        rules_modified = True
-        
-        # Samba firewall rule - only for Windows VMs
-        if info['ostype'].startswith('win'):
-            samba_port = BASE_PORT_SAMBA + vmid
-            samba_comment = f"samba-vmid-{vmid}"
-            add_fw_accept_rule(samba_port, samba_comment, wan_if)
-            rules_modified = True
-
-    if cleanup_stale_fw_rules(vm_infos.keys()):
-        rules_modified = True
-
-    if rules_modified:
-        logger.info("Restarting pve-firewall")
-        subprocess.run(["pve-firewall", "stop"], check=True)
-        subprocess.run(["pve-firewall", "start"], check=True)
 
     logger.info("Sync complete.")
 

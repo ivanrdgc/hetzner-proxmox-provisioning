@@ -143,6 +143,8 @@ IN SSH(ACCEPT) -log nolog
 
 IN DHCPfwd(ACCEPT) -log nolog
 IN ACCEPT -source dc/nat-gateway -log nolog
+IN RDP(ACCEPT) -log nolog
+IN SMB(ACCEPT) -log nolog
 
 [group vm-no-internet]
 
