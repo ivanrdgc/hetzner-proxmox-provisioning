@@ -153,11 +153,11 @@ OUT DROP -log nolog
 
 [group vm-no-rdp]
 
-IN SMB(DROP) -log nolog
+IN RDP(DROP) -log nolog
 
 [group vm-no-samba]
 
-IN RDP(DROP) -log nolog
+IN SMB(DROP) -log nolog
 
 [group vm-public-ipv6]
 
