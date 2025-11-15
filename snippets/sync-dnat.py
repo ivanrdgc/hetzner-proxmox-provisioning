@@ -14,9 +14,15 @@ import os
 try:
     import firebase_admin
     from firebase_admin import credentials, firestore
+    try:
+        from google.cloud.firestore_v1 import FieldFilter
+        FIELD_FILTER_AVAILABLE = True
+    except ImportError:
+        FIELD_FILTER_AVAILABLE = False
     FIREBASE_AVAILABLE = True
 except ImportError:
     FIREBASE_AVAILABLE = False
+    FIELD_FILTER_AVAILABLE = False
 
 # Constants
 BRIDGE_NET = "10.0.0.0/16"
@@ -376,7 +382,11 @@ def sync_ipv6_to_firestore(vm_infos):
             try:
                 # Query for server document with matching proxmoxId
                 servers_ref = db.collection('servers')
-                query = servers_ref.where('proxmoxId', '==', vmid)
+                # Use new filter API if available to avoid deprecation warnings
+                if FIELD_FILTER_AVAILABLE:
+                    query = servers_ref.where(filter=FieldFilter('proxmoxId', '==', vmid))
+                else:
+                    query = servers_ref.where('proxmoxId', '==', vmid)
                 docs = list(query.stream())
                 
                 if not docs:
