@@ -10,6 +10,14 @@ import logging
 from pathlib import Path
 import os
 
+# Firebase Admin SDK imports (optional - will be initialized if credentials available)
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+
 # Constants
 BRIDGE_NET = "10.0.0.0/16"
 BASE_PORT_RDP = 20000
@@ -46,6 +54,45 @@ logger = logging.getLogger(__name__)
 # Log cleanup if it happened
 if was_cleaned:
     logger.info("Log file deleted due to size limit (> 1 MB)")
+
+# ---------------------------------------------------------------
+# Firebase initialization
+# ---------------------------------------------------------------
+def initialize_firebase():
+    """Initialize Firebase Admin SDK if credentials file is available."""
+    if not FIREBASE_AVAILABLE:
+        logger.debug("Firebase Admin SDK not available (package not installed)")
+        return False
+    
+    # Check if already initialized
+    if firebase_admin._apps:
+        return True
+    
+    # Get credentials file path from environment or use default
+    creds_file = os.environ.get("FIREBASE_CREDENTIALS_FILE", "/etc/firebase-credentials.json")
+    creds_path = Path(creds_file)
+    
+    if not creds_path.exists():
+        logger.debug(f"Firebase credentials file not found at {creds_file}, skipping Firestore sync")
+        return False
+    
+    if not creds_path.is_file():
+        logger.warning(f"Firebase credentials path {creds_file} is not a file, skipping Firestore sync")
+        return False
+    
+    try:
+        cred = credentials.Certificate(str(creds_path))
+        firebase_admin.initialize_app(cred)
+        logger.info(f"Firebase Admin SDK initialized with credentials from {creds_file}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to initialize Firebase Admin SDK: {e}, continuing without Firestore sync")
+        return False
+
+# Initialize Firebase (if available)
+FIREBASE_INITIALIZED = False
+if FIREBASE_AVAILABLE:
+    FIREBASE_INITIALIZED = initialize_firebase()
 
 # ---------------------------------------------------------------
 # Helper utils
@@ -105,12 +152,55 @@ def get_vm_info(vmid):
             if line.startswith("ostype:"):
                 ostype = line.split(":")[1].strip()
         interfaces = json.loads(run(["qm", "guest", "cmd", str(vmid), "network-get-interfaces"]))
+        
+        ipv4 = None
+        ipv6 = None
+        
         for iface in interfaces:
-            for addr in iface.get("ip-addresses", []):
+            # Skip loopback interfaces
+            if 'loopback' in iface.get('name', '').lower():
+                continue
+            
+            ip_addresses = iface.get("ip-addresses", [])
+            for addr in ip_addresses:
                 ip = addr.get("ip-address")
-                if ip and ipaddress.ip_address(ip).version == 4:
-                    if ipaddress.ip_address(ip) in ipaddress.ip_network(BRIDGE_NET):
-                        return {"ip": ip, "ostype": ostype}
+                if not ip:
+                    continue
+                
+                # Check IPv4 addresses
+                try:
+                    ip_obj = ipaddress.ip_address(ip)
+                    if ip_obj.version == 4:
+                        if ip_obj in ipaddress.ip_network(BRIDGE_NET):
+                            ipv4 = ip
+                    elif ip_obj.version == 6:
+                        # Extract IPv6 address, filtering out non-public addresses
+                        addr_str = ip
+                        
+                        # Skip link-local addresses (fe80::) and loopback (::1)
+                        # Also skip addresses with % (zone identifiers for link-local)
+                        if addr_str.startswith('fe80::') or addr_str.startswith('::1') or '%' in addr_str:
+                            continue
+                        
+                        # Skip unique local addresses (fc00::/7)
+                        if addr_str.startswith('fc') or addr_str.startswith('fd'):
+                            continue
+                        
+                        # Found a global IPv6 address
+                        if not ipv6:
+                            ipv6 = addr_str
+                except ValueError:
+                    # Invalid IP address, skip
+                    continue
+            
+            # If we found both IPv4 and IPv6, we can return early
+            if ipv4 and ipv6:
+                break
+        
+        # Return info if we found at least IPv4 (required for NAT rules)
+        if ipv4:
+            return {"ip": ipv4, "ipv6": ipv6, "ostype": ostype}
+        
     except subprocess.CalledProcessError as e:
         if e.returncode == 2:
             # Exit code 2 means no guest agent, exit immediately
@@ -262,6 +352,58 @@ def sync_iptables_rules(expected, actual, table):
             subprocess.run(["iptables", "-t", table] + shlex.split(rule), check=True)
 
 # ---------------------------------------------------------------
+# Firestore sync
+# ---------------------------------------------------------------
+def sync_ipv6_to_firestore(vm_infos):
+    """Sync IPv6 addresses to Firestore servers collection.
+    
+    Args:
+        vm_infos: Dict mapping vmid to VM info (ip, ipv6, ostype)
+    """
+    if not FIREBASE_INITIALIZED:
+        return
+    
+    if not vm_infos:
+        logger.debug("No VM info to sync to Firestore")
+        return
+    
+    try:
+        db = firestore.client()
+        
+        for vmid, info in vm_infos.items():
+            ipv6_address = info.get("ipv6")
+            
+            try:
+                # Query for server document with matching proxmoxId
+                servers_ref = db.collection('servers')
+                query = servers_ref.where('proxmoxId', '==', vmid)
+                docs = list(query.stream())
+                
+                if not docs:
+                    logger.debug(f"No Firestore document found for VM {vmid} (proxmoxId={vmid})")
+                    continue
+                
+                if len(docs) > 1:
+                    logger.warning(f"Multiple Firestore documents found for VM {vmid} (proxmoxId={vmid}), updating all")
+                
+                # Update each matching document
+                for doc_snapshot in docs:
+                    server_id = doc_snapshot.id
+                    update_data = {'ipv6': ipv6_address} if ipv6_address else {'ipv6': None}
+                    
+                    # Get document reference and update
+                    server_doc_ref = db.collection('servers').document(server_id)
+                    server_doc_ref.update(update_data)
+                    logger.info(f"Updated Firestore server {server_id} (VM {vmid}): ipv6={ipv6_address}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to sync IPv6 for VM {vmid} to Firestore: {e}")
+                continue
+    
+    except Exception as e:
+        logger.error(f"Failed to sync IPv6 to Firestore: {e}")
+
+# ---------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------
 
@@ -327,6 +469,10 @@ def main():
     # Sync iptables rules
     sync_iptables_rules(expected_nat, actual["nat"], "nat")
     sync_iptables_rules(expected_filter, actual["filter"], "filter")
+
+    # Sync IPv6 addresses to Firestore
+    if vm_infos:
+        sync_ipv6_to_firestore(vm_infos)
 
     logger.info("Sync complete.")
 

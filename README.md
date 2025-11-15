@@ -12,6 +12,12 @@ This will automatically generate:
 
 The server ID can be any number between 1 and 1,048,574.
 
+# Prepare new host
+
+## Checklist
+- /etc/firebase-credentials.json
+- /var/lib/svz/dump/vzdump-qemu-100-es.vma.zst
+
 # Prepare Windows Template
 
 ## Checklist
@@ -20,6 +26,8 @@ The server ID can be any number between 1 and 1,048,574.
 - Apply Java patch for SQX
 - Install desired software
 - NTP servers for Hetzner
+- Permitir Samba en el firewall de Windows
+- Crear carpeta C:\Mis Servidores y enlace en el escritorio
 - Disk cleanup
 - Sysprep with unattend.xml
 - From Linux, remove recovery partition
@@ -72,6 +80,24 @@ $RegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
 Set-ItemProperty -Path $RegPath -Name "AutoAdminLogon" -Value "1" -Type String
 Set-ItemProperty -Path $RegPath -Name "DefaultUserName" -Value "Administrador" -Type String
 #Set-ItemProperty -Path $RegPath -Name "DefaultPassword" -Value "<new password>" -Type String
+
+# Allow SAMBA through Windows Firewall
+Set-NetFirewallRule -DisplayName 'Uso compartido de archivos e impresoras (restrictivo) (SMB de entrada)' -Enabled True
+
+# Create Mis Servidores folder and Desktop symlink
+$targetFolder = 'C:\Mis Servidores';
+$publicDesktop = 'C:\Users\Public\Desktop';
+$linkPath = "$publicDesktop\Mis Servidores";
+
+if (!(Test-Path $targetFolder)) { New-Item -ItemType Directory -Path $targetFolder -Force | Out-Null }
+
+if (Test-Path $linkPath) {
+    $item = Get-Item $linkPath -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { exit }
+    Remove-Item $linkPath -Recurse -Force
+}
+
+New-Item -ItemType SymbolicLink -Path $linkPath -Target $targetFolder -Force | Out-Null
 ```
 
 ## Winget update fix for Sysprep

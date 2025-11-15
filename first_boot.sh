@@ -36,6 +36,8 @@ fi
 
 apt-get update && apt-get full-upgrade -y
 #apt-get purge -y proxmox-first-boot
+apt-get install -y python3-pip
+pip3 install firebase_admin --break-system-packages --root-user-action=ignore
 
 # Configure chrony with Hetzner NTP servers
 log "Configuring chrony with Hetzner NTP servers"
