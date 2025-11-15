@@ -17,6 +17,7 @@ The server ID can be any number between 1 and 1,048,574.
 ## Checklist
 - /etc/firebase-credentials.json
 - /var/lib/svz/dump/vzdump-qemu-100-es.vma.zst
+- Add server IPv6 CDIR to Proxmox firewall
 
 # Prepare Windows Template
 
