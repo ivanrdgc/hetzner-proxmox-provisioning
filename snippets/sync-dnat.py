@@ -413,6 +413,47 @@ def sync_ipv6_to_firestore(vm_infos):
     except Exception as e:
         logger.error(f"Failed to sync IPv6 to Firestore: {e}")
 
+def update_last_started_in_firestore(vmid):
+    """Update lastStarted timestamp in Firestore when a VM receives an IP.
+    
+    Args:
+        vmid: VM ID (proxmoxId)
+    """
+    if not FIREBASE_INITIALIZED:
+        return
+    
+    try:
+        db = firestore.client()
+        
+        # Query for server document with matching proxmoxId
+        servers_ref = db.collection('servers')
+        # Use new filter API if available to avoid deprecation warnings
+        if FIELD_FILTER_AVAILABLE:
+            query = servers_ref.where(filter=FieldFilter('proxmoxId', '==', vmid))
+        else:
+            query = servers_ref.where('proxmoxId', '==', vmid)
+        docs = list(query.stream())
+        
+        if not docs:
+            logger.debug(f"No Firestore document found for VM {vmid} (proxmoxId={vmid}) to update lastStarted")
+            return
+        
+        if len(docs) > 1:
+            logger.warning(f"Multiple Firestore documents found for VM {vmid} (proxmoxId={vmid}), updating all")
+        
+        # Update each matching document
+        for doc_snapshot in docs:
+            server_id = doc_snapshot.id
+            update_data = {'lastStarted': firestore.SERVER_TIMESTAMP}
+            
+            # Get document reference and update
+            server_doc_ref = db.collection('servers').document(server_id)
+            server_doc_ref.update(update_data)
+            logger.info(f"Updated Firestore server {server_id} (VM {vmid}): lastStarted timestamp set")
+            
+    except Exception as e:
+        logger.warning(f"Failed to update lastStarted for VM {vmid} in Firestore: {e}")
+
 # ---------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------
@@ -452,6 +493,8 @@ def main():
                 info = wait_for_vm_ip(vmid)
                 if info:
                     vm_infos[vmid] = info
+                    # Update lastStarted timestamp when VM receives an IP
+                    update_last_started_in_firestore(vmid)
                 else:
                     logger.warning(f"VM {vmid} did not get an IP, skipping")
             except Exception as e:
