@@ -493,6 +493,8 @@ def main():
                 info = wait_for_vm_ip(vmid)
                 if info:
                     vm_infos[vmid] = info
+                    # Sync IPv6 first (before lastStarted update, as functions triggered by lastStarted need the updated IP)
+                    sync_ipv6_to_firestore({vmid: info})
                     # Update lastStarted timestamp when VM receives an IP
                     update_last_started_in_firestore(vmid)
                 else:
